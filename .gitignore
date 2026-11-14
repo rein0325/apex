@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+build/
+dist/
+
+# 機密資訊
+.env
+
+# 資料（不進版本控制；數 GB，且可能含授權限制內容）
+data/
+probes/output/
+
+# 個人資料：持股、交易紀錄只留本機（見 docs/技術選型.md §3）
+personal/
+*.duckdb
+*.duckdb.wal
+
+# 編輯器／系統
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

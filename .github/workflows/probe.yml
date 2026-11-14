@@ -1,0 +1,36 @@
+name: 資料來源探測
+
+# 只手動觸發：用來確認 GitHub 的虛擬機（海外 IP）能否連上交易所、MOPS、FinMind
+on:
+  workflow_dispatch:
+    inputs:
+      date:
+        description: "與官方比對的交易日（YYYY-MM-DD）"
+        required: true
+      hist_date:
+        description: "測試歷史回補的交易日"
+        required: false
+        default: "2015-03-02"
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: 執行探測
+        # 探測項目有預期中的未通過（例如 FinMind 免費版限制），不讓整個工作失敗
+        run: python probes/data_source_probe.py --date "${{ inputs.date }}" --hist-date "${{ inputs.hist_date }}" || true
+      - name: 摘要
+        run: cat probes/output/*/report.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: probe-output
+          path: probes/output/
+          retention-days: 7
