@@ -15,7 +15,7 @@ def load(name: str) -> str:
 
 @pytest.mark.parametrize("code,expected", [
     ("2330", "stock"), ("0050", "etf"), ("00400A", "etf"), ("2881A", "preferred"),
-    ("2887Z1", "preferred"), ("910322", "dr"), ("020000", "etn"), ("01001T", "reit"),
+    ("2887Z1", "preferred"), ("910322", "dr"), ("020000", "etn"), ("02001L", "etn"),("01001T", "reit"),
     ("712108", "warrant"), ("71425P", "warrant"), ("030001", "warrant"),
 ])
 def test_classify(code, expected):

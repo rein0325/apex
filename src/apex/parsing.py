@@ -44,7 +44,7 @@ _TYPES: list[tuple[str, re.Pattern[str]]] = [
     ("etf", re.compile(r"00\d{2,4}[A-Z]?")),
     ("preferred", re.compile(r"[1-9]\d{3}[A-Z]\d?")),
     ("dr", re.compile(r"91\d{4}")),
-    ("etn", re.compile(r"02\d{4}[A-Z]?")),
+    ("etn", re.compile(r"02\d{3,4}[A-Z]?")),  # 020000、槓桿／反向 02001L
     ("reit", re.compile(r"01\d{3}T")),
 ]
 
