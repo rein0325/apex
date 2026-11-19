@@ -103,6 +103,52 @@ def run_backtest(db: Database, args: argparse.Namespace) -> int:
     return 0
 
 
+def run_research(db: Database, args: argparse.Namespace) -> int:
+    from apex.backtest import CostModel
+    from apex.research.lab import Lab
+    from apex.research.periods import LABELS, check_range, period_range
+    from apex.research.strategies import build, family_of
+
+    last_day = db.con.execute("SELECT max(date) FROM daily_quotes").fetchone()[0]
+    if args.start:
+        start, end = args.start, args.end or last_day
+        check_range(start, end, args.unlock_holdout)
+        period = "custom"
+    else:
+        start, end = period_range(args.period, last_day, args.unlock_holdout)
+        period = args.period
+    freqs = args.freq or ["M"]
+    costs = CostModel(commission_discount=args.discount, min_commission=args.min_fee,
+                      slippage_bps=args.slippage_bps, lot_size=args.lot)
+    lab = Lab(db, start, end, args.capital, costs)
+    print(f"{LABELS.get(period, '自訂期間')} {start}～{end}")
+    for spec in args.strategy:
+        for freq in freqs:
+            report = lab.evaluate(spec, build(spec, lab.features), start, end, freq, family=family_of(spec),
+                                  period=period, random_runs=args.random, note=args.note)
+            print()
+            print(report.text())
+    return 0
+
+
+def print_trials(db: Database, args: argparse.Namespace) -> int:
+    from apex.research import trials
+
+    df = trials.trials(db, args.period)
+    if df.empty:
+        print("沒有試驗紀錄")
+        return 0
+    real = df[df["family"] != "base"]
+    print(f"{args.period}：共 {len(df)} 筆試驗，其中策略 {len(real)} 筆（基準不計入 DSR）")
+    top = df.sort_values("sharpe", ascending=False).head(args.top)
+    for _, r in top.iterrows():
+        d = trials.deflate(db, int(r["id"]), args.period) if r["family"] != "base" else {}
+        dsr = f"{d['dsr']:.2f}" if d else "—"
+        print(f"#{r['id']:<4} {r['strategy']:<24} {r['freq']:<4} 本金 {r['capital']:>10,.0f}  "
+              f"年化 {r['cagr']:+7.2%}  Sharpe {r['sharpe']:5.2f}  回撤 {r['max_drawdown']:+7.1%}  DSR {dsr}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="apex", description="台股資料層")
     parser.add_argument("-v", "--verbose", action="store_true")
@@ -145,12 +191,31 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--start", required=True, type=_date)
     p.add_argument("--end", required=True, type=_date)
     p.add_argument("--capital", type=float, default=1_000_000)
-    p.add_argument("--freq", default="M", choices=["D", "W", "M", "once"], help="再平衡頻率")
+    p.add_argument("--freq", default="M", choices=["D", "W", "2W", "M", "once"], help="再平衡頻率")
     p.add_argument("--discount", type=float, default=1.0, help="手續費折扣，例如 0.28")
-    p.add_argument("--min-fee", type=float, default=20.0, help="每筆最低手續費")
+    p.add_argument("--min-fee", type=float, default=1.0, help="每筆最低手續費")
     p.add_argument("--slippage-bps", type=float, default=10.0)
     p.add_argument("--lot", type=int, default=1, help="1＝允許零股、1000＝整張")
     p.add_argument("--delist-recovery", type=float, default=1.0, help="下市時以最後收盤價的多少比例轉現金")
+
+    p = sub.add_parser("research", help="策略研究：標準報表＋試驗紀錄（docs/策略研究計畫.md）")
+    p.add_argument("--strategy", required=True, action="append", help="可重複，例如 equal:50")
+    p.add_argument("--period", default="research", choices=["research", "validation", "holdout"])
+    p.add_argument("--start", type=_date, help="自訂起日（覆蓋 --period）")
+    p.add_argument("--end", type=_date, help="自訂迄日")
+    p.add_argument("--freq", action="append", choices=["W", "2W", "M", "once"], help="可重複；預設 M")
+    p.add_argument("--capital", type=float, default=300_000)
+    p.add_argument("--random", type=int, default=0, help="隨機選股對照次數，例如 100")
+    p.add_argument("--unlock-holdout", action="store_true", help="開啟保留期（全部研究結束才用）")
+    p.add_argument("--note", default="")
+    p.add_argument("--discount", type=float, default=1.0)
+    p.add_argument("--min-fee", type=float, default=1.0)
+    p.add_argument("--slippage-bps", type=float, default=10.0)
+    p.add_argument("--lot", type=int, default=1)
+
+    p = sub.add_parser("trials", help="列出試驗紀錄與 Deflated Sharpe")
+    p.add_argument("--period", default="research")
+    p.add_argument("--top", type=int, default=20)
 
     p = sub.add_parser("indices", help="同步加權指數與報酬指數")
     p.add_argument("--start", required=True, help="YYYY-MM")
@@ -186,6 +251,10 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.cmd == "backtest":
             return run_backtest(db, args)
+        if args.cmd == "research":
+            return run_research(db, args)
+        if args.cmd == "trials":
+            return print_trials(db, args)
         client = HttpClient(settings.request_delay_sec, settings.max_retries, settings.timeout_sec)
         pipe = Pipeline(db, RawStore(settings.raw_dir), http_fetcher(client))
         if args.cmd == "calendar":

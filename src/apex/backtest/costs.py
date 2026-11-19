@@ -1,7 +1,7 @@
 """交易成本與成交模擬參數（docs/回測框架.md §2）。
 
-預設值為法定費率，券商折扣、最低手續費、零股條件尚未定案（系統規格書 §8 第 7 項），
-請依實際券商修改 CostModel，或在指令列以參數覆寫。
+最低手續費 1 元、允許零股依使用者券商設定；手續費折扣尚未提供，暫用法定費率（無折扣）。
+可在指令列以參數覆寫。
 """
 
 from __future__ import annotations
@@ -13,12 +13,12 @@ from dataclasses import dataclass
 class CostModel:
     commission_rate: float = 0.001425  # 法定上限 0.1425%
     commission_discount: float = 1.0  # 券商折扣，例如 0.28 代表 2.8 折
-    min_commission: float = 20.0  # 每筆最低手續費（元）；零股常見 1 元，依券商而定
+    min_commission: float = 1.0  # 每筆最低手續費（元），依使用者券商設定
     tax_stock: float = 0.003  # 證交稅：股票賣出 0.3%
     tax_etf: float = 0.001  # ETF、受益憑證賣出 0.1%
     tax_bond_etf: float = 0.0  # 債券 ETF 停徵證交稅（至 2026-12-31）
     slippage_bps: float = 10.0  # 每邊滑價（基點），買進加價、賣出減價
-    lot_size: int = 1  # 1＝允許零股；1000＝只能整張
+    lot_size: int = 1  # 1＝允許零股（使用者會買零股）；1000＝只能整張
     max_participation: float = 0.1  # 單筆成交金額上限：當日成交金額的比例
     limit_threshold: float = 0.095  # 開盤相對前收（還原）漲跌幅達此值視為漲跌停，買不到／賣不掉
     # 下市時以最後收盤價的比例轉為現金（合併換股通常接近 1，下市清算可能遠低於 1）

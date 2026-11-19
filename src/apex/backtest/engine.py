@@ -69,14 +69,17 @@ class BacktestResult:
 
 
 def rebalance_dates(days: pd.DatetimeIndex, freq: str) -> set[pd.Timestamp]:
-    """訊號日：'M' 每月最後一個交易日、'W' 每週最後一個交易日、'D' 每天、'once' 只在第一天。"""
+    """訊號日：'M' 每月最後一個交易日、'2W' 每兩週、'W' 每週最後一個交易日、'D' 每天、'once' 只在第一天。"""
     if freq == "D":
         return set(days)
     if freq == "once":
         return {days[0]}
     key = days.to_period("M" if freq == "M" else "W")
     s = pd.Series(days, index=days)
-    return set(s.groupby(key).max())
+    ends = sorted(s.groupby(key).max())
+    if freq == "2W":
+        ends = ends[::2]
+    return set(ends)
 
 
 def run(data: MarketData, strategy: Strategy, start: dt.date, end: dt.date, capital: float = 1_000_000,
