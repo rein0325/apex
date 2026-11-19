@@ -32,6 +32,15 @@ class Thresholds:
     max_drawdown: float = -0.30
     beat_year_ratio: float = 0.6
     random_percentile: float = 0.95
+    goal: str = "beat"  # 'beat'：勝過大盤與 0050；'swing'：波段、低回撤（不要求報酬高於 0050）
+    target_drawdown: float | None = None  # 希望達到的回撤（未達不算失敗，只標示）
+
+
+# 2026-11-19 使用者決定：要的是 1～2 個月會上漲的股票、跌得比較少；回撤目標 −25%，必要時可到 −30%
+GOALS = {
+    "beat": Thresholds(),
+    "swing": Thresholds(goal="swing", max_drawdown=-0.30, target_drawdown=-0.25),
+}
 
 
 def _pct(x: float | None) -> str:
@@ -284,6 +293,8 @@ class Lab:
     def _checks(self, m: dict, bench: dict, full: pd.DataFrame,
                 rnd: pd.DataFrame | None) -> dict[str, tuple[bool | None, str]]:
         th = self.thresholds
+        if th.goal == "swing":
+            return self._swing_checks(m, bench, full, rnd)
         tr, e50 = bench["TAIEX_TR"], bench["0050"]
         ex = full["超額(指數)"]
         beat = float((ex > 0).mean()) if len(ex) else float("nan")
@@ -299,6 +310,37 @@ class Lab:
                      f"{beat:.0%} 的完整年份勝過報酬指數（門檻 {th.beat_year_ratio:.0%}）"),
             "不靠單一年份": (None, "年份不足") if rest is None else
             (bool(rest > 0), f"扣除超額最好的一年後，其餘年份累積超額 {rest:+.1%}"),
+        }
+        if rnd is None or not len(rnd):
+            checks["隨機選股"] = (None, "未計算")
+        else:
+            pct = float((rnd["cagr"] < m["cagr"]).mean())
+            checks["隨機選股"] = (pct >= th.random_percentile,
+                              f"高於 {pct:.0%} 的隨機選股（門檻 {th.random_percentile:.0%}）")
+        return checks
+
+    def _swing_checks(self, m: dict, bench: dict, full: pd.DataFrame,
+                      rnd: pd.DataFrame | None) -> dict[str, tuple[bool | None, str]]:
+        """波段、低回撤目標：賺錢、比 0050 穩、回撤受控、逐年多數賺錢、不是運氣。"""
+        th = self.thresholds
+        e50 = bench["0050"]
+        yr = full["策略"]
+        up = float((yr > 0).mean()) if len(yr) else float("nan")
+        rest = (1 + yr).drop(yr.idxmax()).prod() - 1 if len(yr) > 2 else None
+        dd = m["max_drawdown"]
+        target = ""
+        if th.target_drawdown is not None:
+            target = f"，目標 {th.target_drawdown:.0%}{'已達成' if dd >= th.target_drawdown else '未達'}"
+        checks: dict[str, tuple[bool | None, str]] = {
+            "年化為正": (bool(m["cagr"] > 0), f"年化 {m['cagr']:+.2%}"),
+            "Sharpe 高於 0050": (bool(m["sharpe"] > e50["sharpe"]),
+                                f"{m['sharpe']:.2f} vs {e50['sharpe']:.2f}"),
+            "最大回撤": (bool(dd >= th.max_drawdown),
+                     f"{dd:+.1%}（上限 {th.max_drawdown:.0%}{target}；0050 {e50['max_drawdown']:+.1%}）"),
+            "逐年賺錢": (bool(up >= th.beat_year_ratio),
+                     f"{up:.0%} 的完整年份報酬為正（門檻 {th.beat_year_ratio:.0%}）"),
+            "不靠單一年份": (None, "年份不足") if rest is None else
+            (bool(rest > 0), f"扣除最好的一年後，其餘年份累積報酬 {rest:+.1%}"),
         }
         if rnd is None or not len(rnd):
             checks["隨機選股"] = (None, "未計算")

@@ -105,29 +105,68 @@ def run_backtest(db: Database, args: argparse.Namespace) -> int:
 
 def run_research(db: Database, args: argparse.Namespace) -> int:
     from apex.backtest import CostModel
-    from apex.research.lab import Lab
-    from apex.research.periods import LABELS, check_range, period_range
+    from apex.research.lab import GOALS, Lab
+    from apex.research.periods import LABELS, PERIODS, check_range, period_range
     from apex.research.strategies import build, family_of
 
     last_day = db.con.execute("SELECT max(date) FROM daily_quotes").fetchone()[0]
     if args.start:
         start, end = args.start, args.end or last_day
         check_range(start, end, args.unlock_holdout)
-        period = "custom"
+        # 落在單一期間內的自訂起訖仍歸入該期間（例如 ML 從 2018 才有預測），試驗次數才算得對
+        period = next((name for name, (s, e) in PERIODS.items()
+                       if s <= start and end <= (e or last_day)), "custom")
     else:
         start, end = period_range(args.period, last_day, args.unlock_holdout)
         period = args.period
     freqs = args.freq or ["M"]
     costs = CostModel(commission_discount=args.discount, min_commission=args.min_fee,
                       slippage_bps=args.slippage_bps, lot_size=args.lot)
-    lab = Lab(db, start, end, args.capital, costs)
+    lab = Lab(db, start, end, args.capital, costs, GOALS[args.goal])
     print(f"{LABELS.get(period, '自訂期間')} {start}～{end}")
     for spec in args.strategy:
         for freq in freqs:
             report = lab.evaluate(spec, build(spec, lab.features), start, end, freq, family=family_of(spec),
-                                  period=period, random_runs=args.random, note=args.note)
+                                  period=period, random_runs=args.random,
+                                  note=" ".join(x for x in (f"goal={args.goal}", args.note) if x))
             print()
             print(report.text())
+    return 0
+
+
+def run_ml(db: Database, args: argparse.Namespace) -> int:
+    """滾動式檢查模型預測力：每年重新訓練，逐年列出 Rank IC 與前 10% 超額報酬。"""
+    import time
+
+    from apex.backtest import load
+    from apex.research.features import Features
+    from apex.research.ml import ML_START, build_dataset, calibration, evaluate_predictions, walk_forward
+    from apex.research.periods import period_range
+
+    last_day = db.con.execute("SELECT max(date) FROM daily_quotes").fetchone()[0]
+    _, end = period_range(args.period, last_day, args.unlock_holdout)
+    for horizon in args.horizon or [60]:
+        t0 = time.time()
+        ds = build_dataset(Features(load(db, ML_START, end)), horizon)
+        print(f"\n資料集 {ML_START}～{end}｜{horizon} 日｜樣本 {len(ds.X):,}｜特徵 {ds.X.shape[1]}｜"
+              f"建立 {time.time() - t0:.0f} 秒")
+        start, _ = period_range(args.period, last_day, args.unlock_holdout)
+        dates = ds.X.index.get_level_values("date")
+        years = [y for y in sorted(set(dates.year)) if y >= max(ML_START.year + 2, start.year)]
+        for model in args.model or ["ridge", "lgbm", "xgb"]:
+            pred, folds = walk_forward(ds, model, years, target=args.target)
+            ev = evaluate_predictions(pred, ds.y)
+            secs = sum(f.seconds for f in folds)
+            print(f"\n模型 {model}｜{horizon} 日｜目標 {args.target}｜訓練 {len(folds)} 次共 {secs:.0f} 秒")
+            if args.target == "up":
+                cal = calibration(pred, ds.y)
+                print("機率校準（樣本外）：")
+                print(cal.to_string(formatters={"預測機率": "{:.0%}".format, "實際上漲比例": "{:.0%}".format,
+                                                "平均報酬": "{:+.2%}".format}))
+            print("年份    Rank IC  IC>0 月份  前10%超額  月數")
+            for idx, r in ev.iterrows():
+                print(f"{idx:<6} {r['ic']:+8.3f}  {r['ic_pos']:8.0%}  {r['spread']:+9.2%}  "
+                      f"{int(r['months']):4d}")
     return 0
 
 
@@ -153,6 +192,13 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="apex", description="台股資料層")
     parser.add_argument("-v", "--verbose", action="store_true")
     sub = parser.add_subparsers(dest="cmd", required=True)
+
+    p = sub.add_parser("ml", help="機器學習滾動式檢查（預測力）")
+    p.add_argument("--period", default="research", choices=["research", "validation", "holdout"])
+    p.add_argument("--model", action="append", choices=["ridge", "lgbm", "xgb"])
+    p.add_argument("--horizon", action="append", type=int, choices=[20, 60, 120])
+    p.add_argument("--target", default="rank", choices=["rank", "up"], help="rank：超額排名；up：上漲機率")
+    p.add_argument("--unlock-holdout", action="store_true")
 
     p = sub.add_parser("calendar", help="同步交易日曆")
     p.add_argument("--start", required=True, help="YYYY-MM")
@@ -206,6 +252,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--freq", action="append", choices=["W", "2W", "M", "once"], help="可重複；預設 M")
     p.add_argument("--capital", type=float, default=300_000)
     p.add_argument("--random", type=int, default=0, help="隨機選股對照次數，例如 100")
+    p.add_argument("--goal", default="beat", choices=["beat", "swing"],
+                   help="beat：勝過大盤與 0050；swing：波段、低回撤（回撤目標 −25%%，上限 −30%%）")
     p.add_argument("--unlock-holdout", action="store_true", help="開啟保留期（全部研究結束才用）")
     p.add_argument("--note", default="")
     p.add_argument("--discount", type=float, default=1.0)
@@ -255,6 +303,8 @@ def main(argv: list[str] | None = None) -> int:
             return run_research(db, args)
         if args.cmd == "trials":
             return print_trials(db, args)
+        if args.cmd == "ml":
+            return run_ml(db, args)
         client = HttpClient(settings.request_delay_sec, settings.max_retries, settings.timeout_sec)
         pipe = Pipeline(db, RawStore(settings.raw_dir), http_fetcher(client))
         if args.cmd == "calendar":

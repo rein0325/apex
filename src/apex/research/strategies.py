@@ -216,6 +216,50 @@ def growth_not_extended(arg: str, f: Features) -> Strategy:
     return _selector(f, arg, score)
 
 
+# ── ML. 機器學習分數（docs/機器學習研究計畫.md）──────────────────────────────
+
+_ML_SCORES: dict = {}
+_ML_DATA: dict = {}
+
+
+@register("ML", "ML")
+def ml_rank(arg: str, f: Features) -> Strategy:
+    """ML:模型:期間:檔數:緩衝[:市值前K大]，例如 ML:lgbm:60:15:3、ML:ridge:60:15:3:150。
+
+    分數由滾動式訓練產生（每年重新訓練）；第 5 個參數限定只從市值前 K 大的股票中挑選。
+    """
+    from apex.research.ml import MLStrategy, scores_for
+    parts = arg.split(":")
+    model = parts[0] if parts and parts[0] else "lgbm"
+    horizon = int(parts[1]) if len(parts) > 1 and parts[1] else 60
+    n, buffer = _params(":".join(parts[2:4]), default_n=15, default_buffer=3.0)
+    top_k = int(parts[4]) if len(parts) > 4 and parts[4] else None
+    end = f.days[-1].date()
+    key = (model, horizon, end)
+    if key not in _ML_SCORES:
+        _ML_SCORES[key] = scores_for(f.db, end, model, horizon, cache=_ML_DATA)
+    return MLStrategy(_ML_SCORES[key], n, buffer, f["mcap"] if top_k else None, top_k)
+
+
+@register("MLP", "ML")
+def ml_up_prob(arg: str, f: Features) -> Strategy:
+    """MLP:模型:期間:檔數:緩衝:最低機率，例如 MLP:lgbm:60:15:3:0.6。
+
+    模型預測持有期間上漲的機率；只買機率 ≥ 最低機率的前 n 檔，每檔 1/n，其餘放現金（可以空手）。
+    """
+    from apex.research.ml import MLStrategy, scores_for
+    parts = arg.split(":")
+    model = parts[0] if parts and parts[0] else "lgbm"
+    horizon = int(parts[1]) if len(parts) > 1 and parts[1] else 60
+    n, buffer = _params(":".join(parts[2:4]), default_n=15, default_buffer=3.0)
+    min_prob = float(parts[4]) if len(parts) > 4 and parts[4] else 0.5
+    end = f.days[-1].date()
+    key = ("up", model, horizon, end)
+    if key not in _ML_SCORES:
+        _ML_SCORES[key] = scores_for(f.db, end, model, horizon, cache=_ML_DATA, target="up")
+    return MLStrategy(_ML_SCORES[key], n, buffer, min_score=min_prob)
+
+
 # ── D. 風險調整層 ────────────────────────────────────────────────────────
 
 def _regime(f: Features) -> pd.DataFrame:
