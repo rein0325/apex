@@ -15,7 +15,8 @@ def load(name: str) -> str:
 
 @pytest.mark.parametrize("code,expected", [
     ("2330", "stock"), ("0050", "etf"), ("00400A", "etf"), ("2881A", "preferred"),
-    ("2887Z1", "preferred"), ("910322", "dr"), ("020000", "etn"), ("02001L", "etn"),("01001T", "reit"),
+    ("2887Z1", "preferred"), ("910322", "dr"), ("9103", "dr"), ("020000", "etn"), ("02001L", "etn"),
+    ("01001T", "reit"),
     ("712108", "warrant"), ("71425P", "warrant"), ("030001", "warrant"),
 ])
 def test_classify(code, expected):
@@ -51,3 +52,16 @@ def test_tpex_holiday_not_published():
 def test_taiex_month_calendar():
     days = twse.parse_taiex_month(load("twse_taiex_201503.json"))
     assert len(days) == 22 and days[0]["date"] == dt.date(2015, 3, 2)
+
+
+def test_tpex_skips_title_row_mixed_into_data():
+    """2015-11-23 的回應在資料中混入「104年11月23日 櫃檯買賣中心證券行情」表頭列。"""
+    import json
+
+    d = dt.date(2026, 11, 13)
+    data = json.loads((FIX / "tpex_quotes_20261113.json").read_text(encoding="utf-8"))
+    main = next(t for t in data["tables"] if t["title"] == "上櫃股票行情")
+    n = len(tpex.parse_quotes(json.dumps(data), d))
+    main["data"].insert(1, ["115年11月13日 櫃檯買賣中心證券行情"] + [""] * (len(main["fields"]) - 1))
+    quotes = tpex.parse_quotes(json.dumps(data), d)
+    assert len(quotes) == n and all(q.code.isalnum() and q.code.isascii() for q in quotes)

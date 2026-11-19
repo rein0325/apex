@@ -35,8 +35,14 @@ class HttpClient:
                 time.sleep(wait)
         self._last_call[host] = time.monotonic()
 
-    def get_text(self, url: str, params: dict[str, str] | None = None) -> str:
+    def get_text(self, url: str, params: dict[str, str] | None = None, encoding: str = "utf-8") -> str:
         full_url = url + ("?" + urllib.parse.urlencode(params) if params else "")
+        return self._request(full_url, None, encoding)
+
+    def post_text(self, url: str, form: dict[str, str], encoding: str = "utf-8") -> str:
+        return self._request(url, urllib.parse.urlencode(form).encode("ascii"), encoding)
+
+    def _request(self, full_url: str, body: bytes | None, encoding: str) -> str:
         host = urllib.parse.urlsplit(full_url).netloc
         last_error: Exception | None = None
         for attempt in range(self.max_retries + 1):
@@ -45,10 +51,10 @@ class HttpClient:
                 log.warning("重試 %s（第 %d 次，等待 %.0f 秒）：%s", full_url, attempt, backoff, last_error)
                 time.sleep(backoff)
             self._throttle(host)
-            req = urllib.request.Request(full_url, headers={"User-Agent": USER_AGENT})
+            req = urllib.request.Request(full_url, data=body, headers={"User-Agent": USER_AGENT})
             try:
                 with urllib.request.urlopen(req, timeout=self.timeout_sec) as resp:
-                    return resp.read().decode("utf-8", errors="replace")
+                    return resp.read().decode(encoding, errors="replace")
             except urllib.error.HTTPError as e:
                 last_error = e
                 if e.code not in RETRY_STATUS:

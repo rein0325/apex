@@ -46,6 +46,8 @@ def parse_quotes(text: str, date: dt.date) -> list[Quote]:
     quotes = []
     for row in table.get("data", []):
         code = row[idx["證券代號"]].strip()
+        if not code.isascii() or not code.isalnum():
+            continue  # 非證券列（表頭、說明）
         sec_type = classify(code)
         if sec_type == "warrant":
             continue
@@ -57,6 +59,49 @@ def parse_quotes(text: str, date: dt.date) -> list[Quote]:
             trades=to_int(row[idx["成交筆數"]]),
         ))
     return quotes
+
+
+TAIEX_TR_URL = "https://www.twse.com.tw/rwd/zh/TAIEX/MFI94U"
+
+
+def parse_taiex_tr_month(text: str) -> list[tuple[dt.date, float | None]]:
+    """發行量加權股價報酬指數（含息）月資料 → (日期, 收盤)。回測的市場基準應使用報酬指數。"""
+    data = _load(text)
+    if data.get("stat") != "OK":
+        raise NotPublished(f"報酬指數月資料：{data.get('stat')}")
+    fields = [f.replace("　", "") for f in data.get("fields") or []]
+    if fields != ["日期", "發行量加權股價報酬指數"]:
+        raise ParseError(f"報酬指數欄位不符：{fields}")
+    return [(roc_date(r[0]), to_float(r[1])) for r in data.get("data") or []]
+
+
+HOLIDAY_URL ="https://www.twse.com.tw/rwd/zh/holidaySchedule/holidaySchedule"
+
+
+def holiday_params(year: int) -> dict[str, str]:
+    return {"date": f"{year:04d}0101", "response": "json"}
+
+
+def parse_holidays(text: str, year: int) -> list[tuple[dt.date, str, bool]]:
+    """市場開休市日期 → (日期, 名稱, 是否休市)。
+
+    表中也列出「開始交易日」「最後交易日」等仍有交易的日子，名稱含「交易日」者視為開市。
+    「市場無交易，僅辦理結算交割作業」為休市。該年度尚未公布時回傳 NotPublished。
+    """
+    data = _load(text)
+    if str(data.get("stat", "")).lower() != "ok":
+        raise NotPublished(f"{year} 休市日期：{data.get('stat')}")
+    title = str(data.get("title", ""))
+    if not title.startswith(f"{year - 1911} 年"):
+        raise NotPublished(f"{year} 休市日期尚未公布（回應為 {title}）")
+    if (data.get("fields") or [])[:2] != ["日期", "名稱"]:
+        raise ParseError(f"休市日期欄位不符：{data.get('fields')}")
+    out = []
+    for row in data.get("data") or []:
+        d = dt.date.fromisoformat(row[0])
+        name = row[1].strip()
+        out.append((d, name, "交易日" not in name))
+    return out
 
 
 def parse_taiex_month(text: str) -> list[dict]:

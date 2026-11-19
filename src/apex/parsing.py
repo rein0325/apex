@@ -40,10 +40,10 @@ def roc_date(s: str) -> dt.date:
 # 證券分類（見 docs/資料層設計.md §3）。順序重要：權證先判斷。
 WARRANT = re.compile(r"(0[3-8]\d{4}|7\d{4,5})[A-Z]?")
 _TYPES: list[tuple[str, re.Pattern[str]]] = [
+    ("dr", re.compile(r"91\d{2}|91\d{4}")),  # 早期存託憑證用 4 碼（9103 美德醫療-DR），先於普通股判斷
     ("stock", re.compile(r"[1-9]\d{3}")),
     ("etf", re.compile(r"00\d{2,4}[A-Z]?")),
     ("preferred", re.compile(r"[1-9]\d{3}[A-Z]\d?")),
-    ("dr", re.compile(r"91\d{4}")),
     ("etn", re.compile(r"02\d{3,4}[A-Z]?")),  # 020000、槓桿／反向 02001L
     ("reit", re.compile(r"01\d{3}T")),
 ]

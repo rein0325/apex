@@ -46,6 +46,8 @@ def parse_quotes(text: str, date: dt.date) -> list[Quote]:
             raise ParseError(f"TPEx {date}「{title}」欄位不符：{fields}") from e
         for row in table.get("data", []):
             code = row[idx["代號"]].strip()
+            if not code.isascii() or not code.isalnum():
+                continue  # 2015-11-23 等日期混入表頭列
             sec_type = classify(code)
             if sec_type == "warrant":
                 continue

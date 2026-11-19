@@ -15,6 +15,7 @@ ROW_COUNT_LOOKBACK = 20
 OHLC_ERROR_RATIO = 0.01
 NO_TRADE_WARN_RATIO = 0.30
 EXTREME_MOVE = 0.105
+NEW_LISTING_DAYS = 5
 
 Result = tuple[str, str, str, str]  # (market, check_name, severity, detail)
 
@@ -69,18 +70,34 @@ def check_date(db: Database, date: dt.date) -> list[Result]:
             results.append((market, "no_trade_ratio", "warning",
                             f"普通股 {no_trade}/{stocks} 無成交"))
 
-        # 普通股相對前一交易日收盤的極端漲跌
+        # 普通股相對前一交易日收盤的極端漲跌。當日有公司行動時以參考價為基準；
+        # 現增除權日的合理區間為 [理論參考價, 減除股利參考價]，超出區間 10.5% 才警告。
         prev_day = db.previous_trading_days(date, 1)
         if prev_day:
             rows = con.execute("""
-                SELECT t.code, t.close / p.close - 1 AS ret
-                FROM daily_quotes t JOIN daily_quotes p
-                  ON p.code = t.code AND p.market = t.market AND p.date = ?
-                WHERE t.date = ? AND t.market = ? AND t.sec_type = 'stock'
-                  AND t.close IS NOT NULL AND p.close IS NOT NULL
-                  AND abs(t.close / p.close - 1) > ?
+                WITH ev AS (
+                    SELECT code,
+                           exp(sum(ln(least(ref_price, coalesce(theo_ref, ref_price)) / prev_close))) AS lo,
+                           exp(sum(ln(greatest(ref_price, coalesce(theo_ref, ref_price)) / prev_close))) AS hi
+                    FROM corporate_actions_eff
+                    WHERE eff_date = ? AND prev_close > 0 AND ref_price > 0 GROUP BY code
+                ), m AS (
+                    SELECT t.code, t.close / (p.close * coalesce(ev.lo, 1)) - 1 AS lo_ret,
+                           t.close / (p.close * coalesce(ev.hi, 1)) - 1 AS hi_ret
+                    FROM daily_quotes t JOIN daily_quotes p
+                      ON p.code = t.code AND p.market = t.market AND p.date = ?
+                    LEFT JOIN ev ON ev.code = t.code
+                    WHERE t.date = ? AND t.market = ? AND t.sec_type = 'stock'
+                      AND t.close IS NOT NULL AND p.close IS NOT NULL
+                )
+                SELECT code, CASE WHEN hi_ret > 0 THEN hi_ret ELSE lo_ret END AS ret FROM m
+                WHERE hi_ret > ? OR lo_ret < -?
                 ORDER BY abs(ret) DESC
-            """, [prev_day[0], date, market, EXTREME_MOVE]).fetchall()
+            """, [date, prev_day[0], date, market, EXTREME_MOVE, EXTREME_MOVE]).fetchall()
+            # 新上市櫃前 5 個交易日不設漲跌幅，不列入
+            rows = [r for r in rows if con.execute(
+                "SELECT count(*) FROM daily_quotes WHERE code = ? AND market = ? AND date < ?",
+                [r[0], market, date]).fetchone()[0] >= NEW_LISTING_DAYS]
             if rows:
                 results.append((market, "extreme_move", "warning",
                                 f"{len(rows)} 檔漲跌超過 {EXTREME_MOVE:.1%}：{_examples(rows)}"))

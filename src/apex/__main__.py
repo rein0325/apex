@@ -51,11 +51,56 @@ def print_status(db: Database) -> None:
         print(f"  failed {date} {market}：{message}")
     sec = con.execute("SELECT sec_type, count(*) FROM securities GROUP BY 1 ORDER BY 2 DESC").fetchall()
     print("證券主檔：" + "、".join(f"{t} {n}" for t, n in sec))
+    st = con.execute("SELECT status, count(*) FROM securities GROUP BY 1 ORDER BY 2 DESC").fetchall()
+    snap = con.execute("SELECT max(month) FROM listing_snapshots").fetchone()[0]
+    print("掛牌狀態：" + "、".join(f"{s} {n}" for s, n in st) + f"（一覽表 {snap or '未同步'}）")
+    act = con.execute("""
+        SELECT kind, count(*), min(date), max(date) FROM corporate_actions GROUP BY 1 ORDER BY 2 DESC
+    """).fetchall()
+    if act:
+        print("公司行動：" + "、".join(f"{k} {n}（{a}～{b}）" for k, n, a, b in act))
+    for ds, ok, failed, first, last in con.execute("""
+        SELECT dataset, count(*) FILTER (WHERE status = 'ok'), count(*) FILTER (WHERE status = 'failed'),
+               min(date) FILTER (WHERE status = 'ok'), max(date) FILTER (WHERE status = 'ok')
+        FROM dataset_status GROUP BY 1 ORDER BY 1
+    """).fetchall():
+        print(f"{ds}：ok {ok}、failed {failed}（{first}～{last}，市場×日）")
     warn = con.execute("""
         SELECT check_name, count(*) FROM dq_results WHERE severity = 'warning' GROUP BY 1 ORDER BY 2 DESC
     """).fetchall()
     if warn:
         print("品質警告（天數）：" + "、".join(f"{c} {n}" for c, n in warn))
+
+
+def run_backtest(db: Database, args: argparse.Namespace) -> int:
+    from apex import backtest
+    from apex.backtest.strategies import from_spec
+
+    costs = backtest.CostModel(commission_discount=args.discount, min_commission=args.min_fee,
+                               slippage_bps=args.slippage_bps, lot_size=args.lot,
+                               delist_recovery=args.delist_recovery)
+    data = backtest.load(db, args.start, args.end)
+    result = backtest.run(data, from_spec(args.strategy), args.start, args.end, args.capital, args.freq,
+                          costs)
+    bench = db.con.execute(
+        "SELECT date, close FROM index_daily WHERE index_code = 'TAIEX_TR' ORDER BY date").df()
+    benchmark = None
+    if len(bench):
+        benchmark = bench.assign(date=lambda d: d["date"].astype("datetime64[ns]")).set_index("date")["close"]
+    m = backtest.summarize(result.equity, result.trades, benchmark, result.cash)
+    pct = {"total_return", "cagr", "volatility", "max_drawdown", "exposure", "benchmark_cagr", "excess_cagr",
+           "win_rate", "cost_drag"}
+    print(f"策略 {args.strategy}，{args.start}～{args.end}，本金 {args.capital:,.0f}，再平衡 {args.freq}")
+    print(f"期末資產 {result.equity.iloc[-1]:,.0f}")
+    for k, v in m.items():
+        print(f"  {k:<20}{v:>12.2%}" if k in pct else f"  {k:<20}{v:>12,.2f}")
+    print("逐年報酬（基準：加權報酬指數）：")
+    print(backtest.yearly_returns(result.equity, benchmark).to_string(float_format=lambda x: f"{x:7.2%}"))
+    if result.events:
+        print(f"事件 {len(result.events)} 筆，前 10 筆：")
+        for e in result.events[:10]:
+            print("  " + e)
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -77,7 +122,53 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--refetch", action="store_true", help="重新下載原始資料")
     p.add_argument("--reprocess", action="store_true", help="用已存的原始檔重新解析（不重新下載）")
 
-    sub.add_parser("update", help="每日更新：補齊近一個月未成功的交易日")
+    p = sub.add_parser("actions", help="同步除權息、減資、變更面額並重建還原因子")
+    p.add_argument("--start-year", required=True, type=int)
+    p.add_argument("--end-year", required=True, type=int)
+    p.add_argument("--refetch", action="store_true", help="重新下載原始資料")
+    p.add_argument("--reprocess", action="store_true", help="用已存的原始檔重新解析")
+
+    p = sub.add_parser("chips", help="擷取三大法人、融資融券（可中斷續跑）")
+    p.add_argument("--start", required=True, type=_date)
+    p.add_argument("--end", required=True, type=_date)
+    p.add_argument("--dataset", action="append", choices=["institutional", "margin"], help="預設全部")
+    p.add_argument("--refetch", action="store_true", help="重新下載原始資料")
+    p.add_argument("--reprocess", action="store_true", help="用已存的原始檔重新解析")
+
+    p = sub.add_parser("fundamentals", help="同步月營收與季財報（公開資訊觀測站）")
+    p.add_argument("--start-year", type=int, default=2015)
+    p.add_argument("--refetch", action="store_true", help="重新下載原始資料")
+    p.add_argument("--reprocess", action="store_true", help="用已存的原始檔重新解析")
+
+    p = sub.add_parser("backtest", help="執行回測並與加權報酬指數比較")
+    p.add_argument("--strategy", required=True, help="buyhold:0050、equal:50、momentum:20")
+    p.add_argument("--start", required=True, type=_date)
+    p.add_argument("--end", required=True, type=_date)
+    p.add_argument("--capital", type=float, default=1_000_000)
+    p.add_argument("--freq", default="M", choices=["D", "W", "M", "once"], help="再平衡頻率")
+    p.add_argument("--discount", type=float, default=1.0, help="手續費折扣，例如 0.28")
+    p.add_argument("--min-fee", type=float, default=20.0, help="每筆最低手續費")
+    p.add_argument("--slippage-bps", type=float, default=10.0)
+    p.add_argument("--lot", type=int, default=1, help="1＝允許零股、1000＝整張")
+    p.add_argument("--delist-recovery", type=float, default=1.0, help="下市時以最後收盤價的多少比例轉現金")
+
+    p = sub.add_parser("indices", help="同步加權指數與報酬指數")
+    p.add_argument("--start", required=True, help="YYYY-MM")
+    p.add_argument("--end", required=True, help="YYYY-MM")
+
+    sub.add_parser("holidays", help="同步今年與明年的開休市日期")
+
+    p = sub.add_parser("finmind", help="以 FinMind 補齊已下市櫃公司的月營收與財報")
+    p.add_argument("--refetch", action="store_true")
+
+    p = sub.add_parser("listings", help="同步產業別、上市櫃日與終止上市櫃清單")
+    p.add_argument("--refetch", action="store_true", help="重新下載（覆蓋本月的一覽表）")
+
+    p = sub.add_parser("recheck", help="只重跑品質檢查（不重新解析）")
+    p.add_argument("--start", required=True, type=_date)
+    p.add_argument("--end", required=True, type=_date)
+
+    sub.add_parser("update", help="每日更新：同步公司行動，補齊近一個月未成功的交易日")
     sub.add_parser("status", help="資料狀態摘要")
 
     args = parser.parse_args(argv)
@@ -93,6 +184,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.cmd == "status":
             print_status(db)
             return 0
+        if args.cmd == "backtest":
+            return run_backtest(db, args)
         client = HttpClient(settings.request_delay_sec, settings.max_retries, settings.timeout_sec)
         pipe = Pipeline(db, RawStore(settings.raw_dir), http_fetcher(client))
         if args.cmd == "calendar":
@@ -107,6 +200,36 @@ def main(argv: list[str] | None = None) -> int:
             db.refresh_securities()
             print(f"{r.date}：{r.status} {r.rows} {'；'.join(r.messages)}")
             return 0 if r.ok else 1
+        if args.cmd == "chips":
+            c = pipe.sync_daily(args.start, args.end, args.dataset, args.refetch, args.reprocess)
+            print(f"成功 {c['ok']}、失敗 {c['failed']}（市場×資料集×日）")
+            return 0 if not c["failed"] else 1
+        if args.cmd == "indices":
+            print(f"指數 {pipe.sync_indices(_month_start(args.start), _month_end(args.end))} 個交易日")
+            return 0
+        if args.cmd == "holidays":
+            print(f"開休市日期 {pipe.sync_holidays()} 筆")
+            return 0
+        if args.cmd == "finmind":
+            c = pipe.sync_finmind(args.refetch)
+            db.refresh_securities()
+            print(f"補齊月營收 {c['revenue']}、損益 {c['income']}、資產負債 {c['balance']} 筆")
+            return 0
+        if args.cmd == "fundamentals":
+            c = pipe.sync_fundamentals(args.start_year, refetch=args.refetch, reprocess=args.reprocess)
+            print(f"月營收 {c['revenue']} 筆、財報 {c['financials']} 筆、尚未公告 {c['pending']} 個期間")
+            return 0
+        if args.cmd == "actions":
+            n = pipe.sync_actions(args.start_year, args.end_year, refetch=args.refetch,
+                                 reprocess=args.reprocess)
+            print(f"公司行動 {n} 筆")
+            return 0
+        if args.cmd == "listings":
+            print(f"證券主檔 {pipe.sync_listings(refetch=args.refetch)} 筆")
+            return 0
+        if args.cmd == "recheck":
+            print(f"重新檢查 {pipe.recheck(args.start, args.end)} 個交易日")
+            return 0
         if args.cmd == "backfill":
             results = pipe.backfill(args.start, args.end, args.refetch, reprocess=args.reprocess)
         else:
