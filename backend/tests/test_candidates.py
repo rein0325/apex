@@ -61,3 +61,19 @@ def test_checks_and_advice_rules():
     assert candidates.advice(0.3, good)["level"] == "留意"
     assert candidates.advice(0.8, {**good, "ma_gap_60": -0.01})["level"] == "留意"
     assert candidates.advice(0.1, {**good, "ma_gap_60": -0.01})["level"] == "考慮減碼"
+
+
+def test_track_outcomes_matured_and_running():
+    from apex.track import outcomes
+    days = pd.bdate_range("2026-01-05", periods=10)
+    opn = pd.DataFrame({"A": [10.0] * 10, "0050": [100.0] * 10}, index=days)
+    opn.loc[days[5]:, "A"] = 12.0
+    cls = opn + 0.5
+    log = pd.DataFrame({"signal_date": [days[0].date(), days[7].date()], "code": ["A", "A"], "rank": [1, 1],
+                        "up": [0.56, 0.56], "q50": [0.02, 0.02]})
+    out = outcomes(log, opn, cls, horizon=3).set_index("signal_date")
+    first = out.loc[days[0].date()]
+    # days[1] 開盤買、days[4] 開盤賣
+    assert first["matured"] and first["days"] == 3 and first["ret"] == pytest.approx(0.0)
+    second = out.loc[days[7].date()]
+    assert not second["matured"] and second["ret"] == pytest.approx(12.5 / 12 - 1)  # 開 days[8]，算到最新收盤

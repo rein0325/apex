@@ -253,6 +253,11 @@ def candidates(f: Features, data_date: pd.Timestamp, n: int = 30) -> dict:
         rows.append(row)
     base = {h: {k: float(r.table.loc["全部", k]) for k in ("up", "q25", "q50", "q75", "mean")}
             for h, r in res.items()}
+    # 候選股之間近 60 日日報酬的相關係數（建議組合避開走勢太像的股票）
+    codes = [r["code"] for r in rows]
+    corr = f.daily_ret[codes].loc[:data_date].iloc[-60:].corr().round(2)
+    correlation = {"codes": codes, "matrix": [[None if pd.isna(v) else float(v) for v in row] for row in corr.values]}
+
     # 全部可投資股票的評分與持股看法（網站「我的持股」用；只放進加密檔）
     scores = {}
     for code, p in main.scores.items():
@@ -269,6 +274,7 @@ def candidates(f: Features, data_date: pd.Timestamp, n: int = 30) -> dict:
               for h, r in res.items()}
     return {"data_date": str(pd.Timestamp(data_date).date()), "model": MODEL, "horizons": list(HORIZONS),
             "cost": ROUND_TRIP_COST, "candidates": rows, "scores": scores, "base": base, "tables": tables,
+            "correlation": correlation,
             "trained_until": str(main.train_label_end.date()), "calibration": "2018–2024 樣本外"}
 
 

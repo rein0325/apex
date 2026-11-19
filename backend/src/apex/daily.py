@@ -34,6 +34,8 @@ class MarketSummary:
     breadth: float
     returns: pd.DataFrame  # index：加權報酬指數、0050；columns：近1月、近3月、今年、距一年高點
     history: pd.DataFrame | None = None  # 近一年：加權報酬指數、0050（起點 = 1）與大盤狀態
+    industries: pd.DataFrame | None = None  # 產業強弱：產業 → 近1月、近3月（成交金額加權）、檔數
+    status: list | None = None  # 各類資料的更新狀態
 
     @property
     def stale(self) -> bool:
@@ -76,12 +78,56 @@ def market_summary(db: Database, today: dt.date | None = None) -> MarketSummary:
             "今年": s.iloc[-1] / ytd.iloc[-1] - 1 if len(ytd) else float("nan"),
             "距一年高點": s.iloc[-1] / s.iloc[-245:].max() - 1,
         }
+    industries = industry_strength(data)
     hist = pd.DataFrame({"加權報酬指數": tr, "0050": e50}).iloc[-245:].ffill()
     hist = hist / hist.iloc[0]
     hist["regime"] = reg["regime"].reindex(hist.index)
     return MarketSummary(data_date, expected, str(last["regime"]), since, float(last["ma_gap"]),
                          float(last["ma_slope"]), float(last["vol_pct"]), float(last["breadth"]),
-                         pd.DataFrame(rows).T, hist)
+                         pd.DataFrame(rows).T, hist, industries, data_status(db, expected))
+
+
+def industry_strength(data, min_members: int = 5) -> pd.DataFrame:
+    """各產業近 1 月、近 3 月報酬（同產業可投資普通股依成交金額加權），至少 min_members 檔才列入。"""
+    from apex.research.features import Features
+
+    f = Features(data)
+    d = data.days[-1]
+    ind = f.industry().loc[d]
+    r20, r60 = f["ind_ret_20"].loc[d], f["ind_ret_60"].loc[d]
+    df = pd.DataFrame({"industry": ind, "近1月": r20, "近3月": r60}).loc[f.stocks].dropna()
+    g = df.groupby("industry")
+    out = pd.DataFrame({"近1月": g["近1月"].first(), "近3月": g["近3月"].first(), "檔數": g.size()})
+    return out[out["檔數"] >= min_members].sort_values("近1月", ascending=False)
+
+
+def data_status(db: Database, expected: dt.date) -> list[dict]:
+    """各類資料是否更新到應有的日期（規格書 §5.4、企劃書 5.3）。"""
+    def ok_markets(sql: str, params: list) -> set:
+        return {r[0] for r in db.con.execute(sql, params).fetchall()}
+
+    out = []
+    quotes = ok_markets("SELECT market FROM ingest_status WHERE date = ? AND status = 'ok'", [expected])
+    out.append({"name": "上市、上櫃行情", "date": str(expected), "ok": {"TWSE", "TPEX"} <= quotes})
+    for ds, name in (("institutional", "三大法人買賣超"), ("margin", "融資融券")):
+        got = ok_markets("SELECT market FROM dataset_status WHERE dataset = ? AND date = ? AND status = 'ok'",
+                         [ds, expected])
+        last = db.con.execute("SELECT max(date) FROM dataset_status WHERE dataset = ? AND status = 'ok'",
+                              [ds]).fetchone()[0]
+        out.append({"name": name, "date": str(last) if last else None, "ok": {"TWSE", "TPEX"} <= got})
+    idx = db.con.execute("SELECT max(date) FROM index_daily WHERE index_code = 'TAIEX_TR'").fetchone()[0]
+    out.append({"name": "加權報酬指數", "date": str(idx) if idx else None, "ok": bool(idx and idx >= expected)})
+    today = dt.date.today()
+    rev = db.con.execute("SELECT max(year * 100 + month) FROM monthly_revenue").fetchone()[0]
+    # 月營收：每月 10 日前公布上個月；11 日起應該要有上個月的資料
+    want = today.replace(day=1) - dt.timedelta(days=1 if today.day > 10 else 32)
+    out.append({"name": "月營收", "date": f"{rev // 100}-{rev % 100:02d}" if rev else None,
+                "ok": bool(rev and rev >= want.year * 100 + want.month), "note": "每月 10 日前公布上個月"})
+    fin = db.con.execute("SELECT year, quarter FROM financials_q WHERE available_date <= ? "
+                         "ORDER BY year DESC, quarter DESC LIMIT 1", [today]).fetchone()
+    out.append({"name": "季財報", "date": f"{fin[0]} 年第 {fin[1]} 季" if fin else None, "ok": fin is not None,
+                "note": "依公告期限陸續更新"})
+    return out
 
 
 def market_text(m: MarketSummary) -> str:
@@ -101,6 +147,13 @@ def market_text(m: MarketSummary) -> str:
     for name, r in m.returns.iterrows():
         cells = " | ".join(f"{r[c]:+.1%}" for c in ("近1月", "近3月", "今年", "距一年高點"))
         lines.append(f"| {name} | {cells} |")
+    if m.industries is not None and len(m.industries):
+        top, bottom = m.industries.head(5), m.industries.tail(5).iloc[::-1]
+        fmt = lambda df: "、".join(f"{i} {r['近1月']:+.0%}" for i, r in df.iterrows())  # noqa: E731
+        lines += ["", f"近 1 個月最強產業：{fmt(top)}", f"近 1 個月最弱產業：{fmt(bottom)}"]
+    if m.status:
+        bad = [x["name"] for x in m.status if not x["ok"]]
+        lines += ["", "資料更新狀態：" + ("全部正常" if not bad else "未更新：" + "、".join(bad))]
     return "\n".join(lines)
 
 

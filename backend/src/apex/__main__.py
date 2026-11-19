@@ -251,7 +251,13 @@ def run_daily(db: Database, args: argparse.Namespace, settings, pipe=None) -> in
         from apex import candidates
         print("計算候選股票（約 1 分鐘）…")
         cands = candidates.candidates(candidates.load_for(db, m.data_date), pd.Timestamp(m.data_date))
+        from apex import track
+        if args.record_paper:  # 推薦紀錄以雲端為準（與模擬追蹤相同）
+            track.record(db, cands)
+        h0 = cands["horizons"][0]
+        cands["track"] = track.track_record(db, h0, cands["base"][h0]["up"])
         sections.append(candidates.text(cands))
+        sections.append(track.text(cands["track"]))
     sections.append(paper.summary_text(db))
     report = daily.compose(sections)
     out = settings.personal_dir / "reports" / f"{dt.date.today():%Y-%m-%d}.md"

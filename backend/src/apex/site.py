@@ -56,6 +56,10 @@ def data(m: MarketSummary, paper: list[dict], generated: dt.datetime) -> dict:
         "breadth": _num(m.breadth),
         "returns": {str(k): {c: _num(v) for c, v in r.items()} for k, r in m.returns.iterrows()},
         "history": history,
+        "industries": None if m.industries is None else [
+            {"name": str(i), "r20": _num(r["近1月"]), "r60": _num(r["近3月"]), "n": int(r["檔數"])}
+            for i, r in m.industries.iterrows()],
+        "status": m.status,
         "paper": paper,
     }
 

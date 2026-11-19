@@ -38,3 +38,5 @@ select = ["E", "F", "I", "UP", "B"]
 [tool.ruff.lint.per-file-ignores]
 "src/apex/site.py" = ["E501"]  # HTML／CSS 樣板
 "src/apex/candidates.py" = ["E501"]  # 白話說明對照表
+"src/apex/track.py" = ["E501"]
+"src/apex/daily.py" = ["E501"]

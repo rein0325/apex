@@ -85,6 +85,29 @@ function render(d) {
     rb.appendChild(tr);
   }
 
+  if (d.industries && d.industries.length) {
+    const fill = (id, rows) => {
+      const tb = document.querySelector(`#${id} tbody`);
+      for (const r of rows) {
+        const tr = document.createElement("tr");
+        cell(tr, r.name);
+        cell(tr, `${pct(r.r20, 0)}（${pct(r.r60, 0)}）`, cls(r.r20));
+        tb.appendChild(tr);
+      }
+    };
+    fill("ind-top", d.industries.slice(0, 5));
+    fill("ind-bottom", d.industries.slice(-5).reverse());
+  }
+  if (d.status) {
+    const sb = document.querySelector("#status tbody");
+    for (const s of d.status) {
+      const tr = document.createElement("tr");
+      cell(tr, `${s.ok ? "✓" : "!"} ${s.name}`, s.ok ? "" : "warn");
+      cell(tr, `${s.date || "—"}${s.note ? `（${s.note}）` : ""}`);
+      sb.appendChild(tr);
+    }
+  }
+
   const pb = document.querySelector("#paper tbody");
   const since = d.paper.map((p) => p.since).filter(Boolean).sort()[0];
   $("paper-since").textContent = since ? `自 ${since} 起` : "尚未開始";

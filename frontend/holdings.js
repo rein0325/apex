@@ -231,6 +231,23 @@ async function loadViews() {
 }
 
 const ADVICE_CLASS = { 續抱: "keep", 留意: "watch", 考慮減碼: "reduce" };
+
+// 換股比較：和第一名（且還沒持有的）候選股比，預期中間值的差扣掉換股成本（賣出手續費＋證交稅＋買進手續費＋滑價，約 0.8%）
+function swapNote(v, holdings) {
+  const held = new Set(holdings.map((h) => h.code));
+  const c = (VIEW.candidates || []).find((x) => !held.has(x.code) && x.h60);
+  const p = document.createElement("p");
+  p.className = "calc";
+  if (!c) { p.textContent = "沒有可比較的候選股。"; return p; }
+  const cost = VIEW.cost || 0.0078;
+  const diff = c.h60.q50 - v.q50 - cost;
+  const f = (x) => `${x > 0 ? "+" : ""}${(x * 100).toFixed(1)}%`;
+  p.textContent = `換股比較：若換成候選第一名 ${c.code} ${c.name}，過去同等級 60 日中間值 ${f(c.h60.q50)}，這檔是 ${f(v.q50)}；` +
+    `扣掉換股成本約 ${(cost * 100).toFixed(1)}% 後，預期差 ${f(diff)}。` +
+    (diff > 0.01 ? "換股的預期比較好，但這只是歷史統計，而且新股票的波動可能更大。" :
+      diff > 0 ? "差距很小，換股不一定划算。" : "扣掉成本後換股不划算。");
+  return p;
+}
 function renderViews(holdings) {
   if (!VIEW) return;
   const box = $("views");
@@ -266,6 +283,7 @@ function renderViews(holdings) {
       li.textContent = `符合的量化條件：${ok.length ? ok.join("、") : "無"}`;
       ul.appendChild(li);
       el.appendChild(ul);
+      if (v.advice.level !== "續抱") el.appendChild(swapNote(v, holdings));
     }
     box.appendChild(el);
   }

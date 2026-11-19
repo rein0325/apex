@@ -52,21 +52,33 @@ function heldCodes() {
 // 4. 分到的金額買不起 1 股就跳過，改選下一名。
 const TARGETS = [[20000, 2], [50000, 3], [100000, 4], [200000, 5], [400000, 6], [Infinity, 8]];
 
+const MAX_CORR = 0.8; // 近 60 日走勢相關係數超過這個值，視為「太像」，不重複選
+function corrOf(a, b) {
+  const c = DATA.correlation;
+  if (!c) return null;
+  const i = c.codes.indexOf(a), j = c.codes.indexOf(b);
+  return i < 0 || j < 0 ? null : c.matrix[i][j];
+}
+
 function plan(cands, budget) {
   const n = TARGETS.find(([lim]) => budget < lim)[1];
   const indCap = Math.max(1, Math.floor(n * 0.4));
   const skipped = new Map();
+  let similar = new Map();
   for (let round = 0; round < 40; round++) {
     const chosen = [], perInd = {};
+    similar = new Map();
     for (const r of cands) {
       if (chosen.length >= n) break;
       if (skipped.has(r.code) || !r.h60 || !(r.close > 0)) continue;
       const ind = r.industry || "其他";
       if ((perInd[ind] || 0) >= indCap) continue;
+      const twin = chosen.find((c) => (corrOf(c.code, r.code) ?? 0) > MAX_CORR);
+      if (twin) { similar.set(r.code, `和 ${twin.code} ${twin.name} 走勢太像（相關係數 ${corrOf(twin.code, r.code).toFixed(2)}）`); continue; }
       perInd[ind] = (perInd[ind] || 0) + 1;
       chosen.push(r);
     }
-    if (!chosen.length) return { n, indCap, rows: [], skipped, cash: budget };
+    if (!chosen.length) return { n, indCap, rows: [], skipped, similar, cash: budget };
     const inv = chosen.map((r) => 1 / Math.max(r.vol_60 || 0.4, 0.1));
     const total = inv.reduce((a, b) => a + b, 0);
     const rows = chosen.map((r, i) => {
@@ -77,11 +89,11 @@ function plan(cands, budget) {
     const bad = rows.filter((x) => x.shares < 1);
     if (!bad.length) {
       const used = rows.reduce((s, x) => s + x.shares * x.r.close + fee(x.shares * x.r.close), 0);
-      return { n, indCap, rows, skipped, cash: budget - used };
+      return { n, indCap, rows, skipped, similar, cash: budget - used };
     }
     for (const x of bad) skipped.set(x.r.code, `每股 ${num(x.r.close, 0)} 元，超過分到的約 ${money(x.alloc)} 元`);
   }
-  return { n, indCap, rows: [], skipped, cash: budget };
+  return { n, indCap, rows: [], skipped, similar, cash: budget };
 }
 
 function renderPlan(budget) {
@@ -93,7 +105,7 @@ function renderPlan(budget) {
     return [];
   }
   const p = plan(DATA.candidates, budget);
-  $("rules").textContent = `這個金額的規則：選 ${p.n} 檔；同一產業最多 ${p.indCap} 檔；波動越大的股票分得越少；分到的錢買不起 1 股就換下一名。`;
+  $("rules").textContent = `這個金額的規則：選 ${p.n} 檔；同一產業最多 ${p.indCap} 檔；走勢太像的（近 60 日相關係數超過 ${MAX_CORR}）不重複選；波動越大的股票分得越少；分到的錢買不起 1 股就換下一名。`;
   if (!p.rows.length) {
     box.innerHTML = '<p class="warn">這個金額太少，買不起候選股票。可以提高金額，或考慮零股價格較低的股票。</p>';
     return [];
@@ -140,6 +152,15 @@ function renderPlan(budget) {
   kpi("平均（扣成本）", `${sgn(avg)} 元`, "被少數大漲拉高，參考用", cls(avg));
   box.appendChild(sum);
 
+  if (p.similar && p.similar.size) {
+    const note = document.createElement("p");
+    note.className = "note";
+    note.textContent = "沒選（走勢太像）：" + [...p.similar].map(([c, why]) => {
+      const r = DATA.candidates.find((x) => x.code === c);
+      return `${c} ${r ? r.name : ""}（${why}）`;
+    }).join("；");
+    box.appendChild(note);
+  }
   if (p.skipped.size) {
     const note = document.createElement("p");
     note.className = "note";
@@ -236,8 +257,49 @@ function card(r, shares) {
   return el;
 }
 
+function renderTrack() {
+  const t = DATA.track, box = $("track");
+  box.innerHTML = "";
+  if (!t) { box.textContent = "尚無紀錄。"; return; }
+  const status = document.createElement("p");
+  const badge = document.createElement("span");
+  badge.className = `advice ${{ 正常: "keep", 注意: "watch", 失準: "reduce" }[t.health.status] || "none"}`;
+  badge.textContent = t.health.status;
+  status.appendChild(badge);
+  status.append(` ${t.health.msg}`);
+  box.appendChild(status);
+  if (t.matured) {
+    const m = t.matured, p = document.createElement("p");
+    p.textContent = `已到期 ${m.n} 筆（${m.dates} 天的推薦）：實際上漲 ${Math.round(m.hit * 100)}%（當時預期 ${Math.round(m.expected_up * 100)}%），平均 ${pct(m.mean)}、中間值 ${pct(m.median)}；同期 0050 平均 ${pct(m.bench)}。`;
+    box.appendChild(p);
+  }
+  if (t.recent && t.recent.length) {
+    const tbl = document.createElement("table");
+    tbl.innerHTML = `<thead><tr><th>推薦日</th><th>持有天數</th><th>前 ${t.top} 名平均</th><th>上漲比例</th><th>0050 同期</th></tr></thead>`;
+    const tb = document.createElement("tbody");
+    for (const r of t.recent) {
+      const tr = document.createElement("tr");
+      for (const [v, c] of [[r.date, ""], [`${r.days}${r.matured ? "（到期）" : ""}`, ""], [pct(r.mean), cls(r.mean)],
+        [`${Math.round(r.hit * 100)}%`, ""], [pct(r.bench), cls(r.bench)]]) {
+        const td = document.createElement("td"); td.textContent = v; if (c) td.className = c; tr.appendChild(td);
+      }
+      tb.appendChild(tr);
+    }
+    tbl.appendChild(tb);
+    const wrap = document.createElement("div"); wrap.className = "scroll"; wrap.appendChild(tbl);
+    box.appendChild(wrap);
+  }
+  if (t.since) {
+    const n = document.createElement("p");
+    n.className = "note";
+    n.textContent = `自 ${t.since} 起每天記錄前 ${t.top || 10} 名。持有天數是交易日；滿 ${t.horizon || 60} 個交易日才算到期。報酬不含交易成本。`;
+    box.appendChild(n);
+  }
+}
+
 function render() {
   const d = DATA, h = d.horizons[0];
+  renderTrack();
   $("meta").textContent = `資料日 ${d.data_date}｜模型每天用最新已知結果重新訓練（訓練資料到 ${d.trained_until}）｜歷史戰績：${d.calibration}`;
   const b = d.base[h];
   $("base").textContent = `對照：隨便挑一檔股票，過去 ${h} 個交易日後上漲機率 ${Math.round(b.up * 100)}%、中間值 ${pct(b.q50)}。`;
