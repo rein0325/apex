@@ -22,6 +22,7 @@ env:
   TZ: Asia/Taipei
   PYTHONIOENCODING: utf-8
   APEX_DB_KEY: ${{ secrets.APEX_DB_KEY }}
+  APEX_VIEW_PASSWORD: ${{ secrets.APEX_VIEW_PASSWORD }} # 候選股票頁的密碼
   SNAPSHOT: ${{ github.workspace }}/snapshot/apex-db.tar.enc
   LAST_RUN: "30 15 * * 1-5"
 
@@ -60,7 +61,7 @@ jobs:
         id: restore
         run: uv run python -m apex snapshot restore "$SNAPSHOT"
 
-      - name: 每日流程（更新資料、月底記錄模擬追蹤、產生網站）
+      - name: 每日流程（更新資料、月底記錄模擬追蹤、候選股票、產生網站）
         id: daily
         run: |
           extra=""

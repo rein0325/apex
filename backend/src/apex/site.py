@@ -60,15 +60,51 @@ def data(m: MarketSummary, paper: list[dict], generated: dt.datetime) -> dict:
     }
 
 
+def price_data(db, data_date: dt.date, lookback_days: int = 60) -> dict:
+    """「我的持股」頁用的公開行情：各證券最新收盤價，以及除權息、分割等事件的還原比例。
+
+    還原價以最新一天為基準（最新的還原因子 = 1）。事件比例 = 事件前因子 ÷ 事件後因子，
+    瀏覽器用「交易日之後所有事件比例的乘積」把當時的股數換算成今天的約當股數（現金股利視為再投入）。
+    這些都是交易所的公開資料，不含任何個人資訊。
+    """
+    last = db.con.execute("""
+        SELECT q.code, s.name, s.sec_type, q.close, q.date
+        FROM daily_quotes_adj q JOIN securities s USING (code)
+        WHERE q.date BETWEEN ? AND ? AND q.close > 0
+        QUALIFY row_number() OVER (PARTITION BY q.code ORDER BY q.date DESC) = 1
+    """, [data_date - dt.timedelta(days=lookback_days), data_date]).fetchall()
+    stocks = {}
+    for code, name, sec_type, close, date in last:
+        row = [name, sec_type, round(float(close), 4)]
+        if date < data_date:
+            row.append(str(date))  # 最後成交日（可能停止交易或下市）
+        stocks[code] = row
+    events: dict[str, list] = {}
+    for code, date, ratio in db.con.execute("""
+        WITH f AS (
+            SELECT code, date, adj_close / close AS f,
+                   lag(adj_close / close) OVER (PARTITION BY code ORDER BY date) AS pf
+            FROM daily_quotes_adj WHERE close > 0 AND adj_close > 0
+        )
+        SELECT code, date, pf / f FROM f WHERE pf IS NOT NULL AND abs(f / pf - 1) > 1e-6 ORDER BY code, date
+    """).fetchall():
+        if code in stocks:
+            events.setdefault(code, []).append([str(date), round(float(ratio), 8)])
+    return {"date": str(data_date), "stocks": stocks, "events": events}
+
+
 def build(m: MarketSummary, paper: list[dict], out_dir: Path, generated: dt.datetime | None = None,
-          frontend: Path = FRONTEND_DIR) -> Path:
-    """輸出網站目錄：frontend/ 的檔案＋data.json。回傳 data.json 路徑。"""
+          frontend: Path = FRONTEND_DIR, prices: dict | None = None) -> Path:
+    """輸出網站目錄：frontend/ 的檔案＋data.json（＋prices.json）。回傳 data.json 路徑。"""
     generated = generated or dt.datetime.now()
     out_dir.mkdir(parents=True, exist_ok=True)
     for f in frontend.iterdir():
         if f.is_file():
             shutil.copy2(f, out_dir / f.name)
     (out_dir / ".nojekyll").write_text("", encoding="utf-8")
+    if prices is not None:
+        (out_dir / "prices.json").write_text(json.dumps(prices, ensure_ascii=False, separators=(",", ":")),
+                                             encoding="utf-8")
     path = out_dir / "data.json"
     path.write_text(json.dumps(data(m, paper, generated), ensure_ascii=False), encoding="utf-8")
     return path

@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "台股智慧量化投資決策系統"
 requires-python = ">=3.13,<3.14"
 dependencies = [
+    "cryptography>=50.0.2",
     "duckdb>=2.0.0",
     "lightgbm>=4.7.0",
     "pandas>=3.1.1",
@@ -36,3 +37,4 @@ select = ["E", "F", "I", "UP", "B"]
 
 [tool.ruff.lint.per-file-ignores]
 "src/apex/site.py" = ["E501"]  # HTML／CSS 樣板
+"src/apex/candidates.py" = ["E501"]  # 白話說明對照表

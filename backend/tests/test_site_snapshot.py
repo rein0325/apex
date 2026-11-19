@@ -33,8 +33,14 @@ def test_site_data_has_market_info_but_no_stock_picks(tmp_path):
     assert d["regime"] == "高波動" and d["stale"] and d["paper"][0]["cum"] == -0.06
     assert len(d["history"]["dates"]) == 30 and d["history"]["regime"][-1] == "高波動"
     assert "2834" not in text and "MLP:lgbm" not in text  # 不公開個股，也只顯示策略說明
-    for f in ("index.html", "app.js", "style.css", ".nojekyll"):  # 畫面來自 frontend/
+    # 畫面來自 frontend/
+    for f in ("index.html", "app.js", "style.css", "holdings.html", "holdings.js", ".nojekyll"):
         assert (tmp_path / f).exists()
+    assert not (tmp_path / "prices.json").exists()
+    prices = {"date": "2026-02-11", "stocks": {"0050": ["元大台灣50", "etf", 90.2]},
+              "events": {"0050": [["2025-06-18", 0.25]]}}
+    site.build(_summary(), rows, tmp_path, prices=prices)
+    assert json.loads((tmp_path / "prices.json").read_text(encoding="utf-8")) == prices
 
 
 def test_commitments_hide_picks_and_are_verifiable(tmp_path):

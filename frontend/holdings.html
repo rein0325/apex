@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex">
+<title>我的持股</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main>
+  <nav class="nav"><a href="index.html">市場狀態</a><a href="picks.html">候選股票</a><a href="holdings.html" class="active">我的持股</a></nav>
+  <h1>我的持股</h1>
+  <p class="note privacy">🔒 資料只存在<b>這台裝置的這個瀏覽器</b>，不會上傳到任何地方。換手機或清除瀏覽器資料就會不見，請定期按「匯出 CSV」備份。</p>
+  <p class="meta" id="price-date">讀取行情中…</p>
+
+  <section class="card">
+    <h2>總覽</h2>
+    <div class="kpis">
+      <div class="kpi">總資產<b id="k-total">—</b></div>
+      <div class="kpi">股票市值<b id="k-value">—</b></div>
+      <div class="kpi">未實現損益<b id="k-unreal">—</b></div>
+      <div class="kpi">已實現損益<b id="k-real">—</b></div>
+      <div class="kpi">股票占總資產<b id="k-ratio">—</b></div>
+      <div class="kpi">目前回撤<b id="k-dd">—</b><small id="k-mdd"></small></div>
+    </div>
+    <div id="warnings"></div>
+    <label class="row">帳戶現金（元）
+      <input type="number" id="cash" min="0" step="1" inputmode="numeric" placeholder="0">
+    </label>
+  </section>
+
+  <section class="card">
+    <h2>持股明細</h2>
+    <div class="scroll">
+      <table id="holdings">
+        <thead><tr><th>股票</th><th>約當股數</th><th>收盤</th><th>市值</th><th>損益</th><th>報酬</th><th>比重</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <p class="note">約當股數含配股、分割與現金股利再投入，可能和券商顯示的股數不同，但總報酬一致。成本採平均成本法（含手續費）。</p>
+  </section>
+
+  <section class="card">
+    <h2>模型對我的持股的看法</h2>
+    <p class="note" id="view-note">讀取中…</p>
+    <div id="views"></div>
+    <details>
+      <summary>看法怎麼判斷？</summary>
+      <ul class="note">
+        <li><b>續抱</b>：模型分數在全市場前半段，且股價在季線（60 日平均）之上。</li>
+        <li><b>留意</b>：模型分數在後半段，或股價跌破季線。</li>
+        <li><b>考慮減碼</b>：模型分數在後 20%，而且股價跌破季線。</li>
+        <li>ETF（例如 0050）和成交量太小的股票不在模型評分範圍。</li>
+        <li>模型沒有通過歷史驗證門檻，看法只是參考；要不要買賣由你決定。</li>
+      </ul>
+    </details>
+  </section>
+
+  <section class="card">
+    <h2>新增交易</h2>
+    <form id="trade-form" class="form">
+      <label>日期<input type="date" id="f-date" required></label>
+      <label>代號或名稱<input id="f-code" list="codes" required autocomplete="off" placeholder="例如 0050"></label>
+      <datalist id="codes"></datalist>
+      <label>買／賣<select id="f-side"><option value="buy">買進</option><option value="sell">賣出</option></select></label>
+      <label>股數<input type="number" id="f-shares" min="1" step="1" inputmode="numeric" required></label>
+      <label>成交價<input type="number" id="f-price" min="0.01" step="0.01" inputmode="decimal" required></label>
+      <label>手續費<input type="number" id="f-fee" min="0" step="1" inputmode="numeric" placeholder="自動"></label>
+      <label>證交稅<input type="number" id="f-tax" min="0" step="1" inputmode="numeric" placeholder="自動"></label>
+      <label>備註<input id="f-note" placeholder="可留空"></label>
+      <p class="note full" id="f-hint"></p>
+      <button type="submit" class="full">新增</button>
+    </form>
+    <details>
+      <summary>手續費設定</summary>
+      <label class="row">手續費折扣（1 = 無折扣，0.28 = 2.8 折）
+        <input type="number" id="discount" min="0.01" max="1" step="0.01" inputmode="decimal">
+      </label>
+    </details>
+  </section>
+
+  <section class="card">
+    <h2>交易紀錄</h2>
+    <div class="scroll">
+      <table id="trades">
+        <thead><tr><th>日期</th><th>股票</th><th>買賣</th><th>股數</th><th>價格</th><th>費用</th><th></th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <div class="buttons">
+      <button type="button" id="export">匯出 CSV</button>
+      <label class="button">匯入 CSV<input type="file" id="import" accept=".csv,text/csv" hidden></label>
+      <button type="button" id="reset-history" class="secondary">重設回撤紀錄</button>
+      <button type="button" id="clear" class="danger">清除全部</button>
+    </div>
+    <p class="note">CSV 格式和電腦上的 personal/trades.csv 相同，可以互相匯入。回撤是從你開始使用這一頁那天起，每次打開時依收盤價累積計算。</p>
+  </section>
+
+  <p class="note">本頁只做記帳與計算，不構成投資建議。</p>
+</main>
+<script src="holdings.js"></script>
+</body>
+</html>

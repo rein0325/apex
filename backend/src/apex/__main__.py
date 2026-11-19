@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import json
 import logging
 import sys
 from pathlib import Path
@@ -243,6 +244,14 @@ def run_daily(db: Database, args: argparse.Namespace, settings, pipe=None) -> in
     sections = [daily.market_text(m)]
     r = portfolio_report(db, settings.trades_path)
     sections.append(portfolio_text(r) if r else "持股報告：尚無交易紀錄（可用 `apex trade` 新增）。")
+    cands = None
+    if not args.no_candidates:
+        import pandas as pd
+
+        from apex import candidates
+        print("計算候選股票（約 1 分鐘）…")
+        cands = candidates.candidates(candidates.load_for(db, m.data_date), pd.Timestamp(m.data_date))
+        sections.append(candidates.text(cands))
     sections.append(paper.summary_text(db))
     report = daily.compose(sections)
     out = settings.personal_dir / "reports" / f"{dt.date.today():%Y-%m-%d}.md"
@@ -255,8 +264,16 @@ def run_daily(db: Database, args: argparse.Namespace, settings, pipe=None) -> in
 
         from apex import site
         perf = {s: paper.performance(db, s) for s in paper.TRACKED}
-        index = site.build(m, site.paper_rows(perf, paper.TRACKED), Path(args.site))
+        index = site.build(m, site.paper_rows(perf, paper.TRACKED), Path(args.site),
+                           prices=site.price_data(db, m.data_date))
         print(f"網站已產生 {index}")
+        from apex import vault
+        if cands is not None and vault.password():
+            box = vault.encrypt(cands, vault.password())
+            (Path(args.site) / "picks.json").write_text(json.dumps(box), encoding="utf-8")
+            print("候選股票已加密寫入 picks.json（需要密碼才能在網站上看）")
+        elif cands is not None:
+            print(f"沒有設定 {vault.PASSWORD_ENV}，候選股票不會放上網站")
     if m.stale and args.fail_if_stale:
         print(f"資料不是最新：應到 {m.expected_date}，只到 {m.data_date}")
         return 1
@@ -315,6 +332,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--site", help="同時產生公開網站到指定目錄（只含市場資訊）")
     p.add_argument("--fail-if-stale", action="store_true",
                    help="資料不是最新時以代碼 1 結束（排程最後一次用）")
+    p.add_argument("--no-candidates", action="store_true", help="不計算候選股票")
 
     p = sub.add_parser("snapshot", help="資料庫加密快照（金鑰放在環境變數 APEX_DB_KEY）")
     p.add_argument("action", choices=["export", "restore"])
