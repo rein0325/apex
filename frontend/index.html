@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex">
+<title>台股市場狀態</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main>
+  <h1>台股市場狀態</h1>
+  <p class="meta" id="meta">讀取中…</p>
+  <p class="warn" id="stale" hidden></p>
+
+  <section class="card">
+    <h2>大盤狀態 <span class="regime" id="regime"></span></h2>
+    <p id="regime-text"></p>
+    <div class="kpis">
+      <div class="kpi">距 200 日均線<b id="ma-gap"></b></div>
+      <div class="kpi">200 日均線近 20 日變化<b id="ma-slope"></b></div>
+      <div class="kpi">波動在過去三年的位置<b id="vol-pct"></b></div>
+      <div class="kpi">站上 60 日均線的股票<b id="breadth"></b></div>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>近一年走勢</h2>
+    <div class="legend">
+      <span><i class="s1"></i>加權報酬指數</span><span><i class="s2"></i>0050</span>
+      <span class="note">背景顏色＝大盤狀態</span>
+    </div>
+    <div id="chart"></div>
+    <table id="returns">
+      <thead><tr><th></th><th>近1月</th><th>近3月</th><th>今年</th><th>距一年高點</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </section>
+
+  <section class="card">
+    <h2>研究策略的模擬追蹤</h2>
+    <p class="note">以下策略在歷史驗證中<b>都沒有通過</b>，只用真實行情追蹤後續表現（紙上交易，<span id="paper-since"></span>，扣除約略成本）。
+      不公開個股，也不是任何買賣建議。</p>
+    <table id="paper">
+      <thead><tr><th>策略</th><th>期數</th><th>累積報酬</th><th>0050 同期</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </section>
+
+  <p class="note">本頁為個人研究用途的市場資訊整理，不構成投資建議；過去表現不代表未來。
+    資料來源：臺灣證券交易所、證券櫃檯買賣中心。</p>
+</main>
+<script src="app.js"></script>
+</body>
+</html>

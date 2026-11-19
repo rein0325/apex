@@ -26,11 +26,11 @@ jobs:
           python-version: "3.13"
       - name: 執行探測
         # 探測項目有預期中的未通過（例如 FinMind 免費版限制），不讓整個工作失敗
-        run: python probes/data_source_probe.py --date "${{ inputs.date }}" --hist-date "${{ inputs.hist_date }}" || true
+        run: python backend/probes/data_source_probe.py --date "${{ inputs.date }}" --hist-date "${{ inputs.hist_date }}" || true
       - name: 摘要
-        run: cat probes/output/*/report.md >> "$GITHUB_STEP_SUMMARY"
+        run: cat backend/probes/output/*/report.md >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         with:
           name: probe-output
-          path: probes/output/
+          path: backend/probes/output/
           retention-days: 7

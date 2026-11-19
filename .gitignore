@@ -13,7 +13,7 @@ dist/
 
 # 資料（不進版本控制；數 GB，且可能含授權限制內容）
 data/
-probes/output/
+backend/probes/output/
 
 # 個人資料：持股、交易紀錄只留本機（見 docs/技術選型.md §3）
 personal/
@@ -25,3 +25,7 @@ personal/
 .idea/
 .DS_Store
 Thumbs.db
+
+# 每日自動化：加密快照與產生的網站（不進版本控制）
+/snapshot/
+/site/

@@ -1,0 +1,38 @@
+:root {
+  --bg: #f7f7f5; --card: #fff; --fg: #1d1f23; --muted: #6b7280; --line: #e5e7eb;
+  --up: #d64545; --down: #2e9e5b; --s1: #2563eb; --s2: #e08a1e;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #121417; --card: #1b1e23; --fg: #e8eaed; --muted: #9aa0a6; --line: #2c3036; }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--bg); color: var(--fg);
+  font: 15px/1.6 -apple-system, "Segoe UI", "Noto Sans TC", "PingFang TC", "Microsoft JhengHei", sans-serif;
+}
+main { max-width: 760px; margin: 0 auto; padding: 16px; }
+h1 { font-size: 1.3rem; margin: .2em 0; }
+h2 { font-size: 1.05rem; margin: 0 0 .6em; }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 16px; margin: 12px 0; }
+.meta, .note { color: var(--muted); font-size: .85rem; }
+.warn { color: #b45309; font-weight: 600; }
+.regime { display: inline-block; padding: 2px 12px; border-radius: 999px; color: #fff; font-weight: 700; }
+table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; margin-top: 8px; }
+th, td { padding: 6px 4px; border-bottom: 1px solid var(--line); text-align: right; }
+th:first-child, td:first-child { text-align: left; }
+th { color: var(--muted); font-weight: 500; font-size: .85rem; }
+.up { color: var(--up); }
+.down { color: var(--down); }
+.kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; margin-top: 10px; }
+.kpi { border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; }
+.kpi b { display: block; font-size: 1.15rem; }
+.chart { width: 100%; height: auto; display: block; }
+.chart .grid { stroke: var(--line); }
+.chart .tick { fill: var(--muted); font-size: 12px; }
+.chart polyline { fill: none; stroke-width: 2; }
+.chart .s1 { stroke: var(--s1); }
+.chart .s2 { stroke: var(--s2); }
+.legend span { display: inline-block; margin-right: 14px; font-size: .85rem; }
+.legend i { display: inline-block; width: 12px; height: 3px; vertical-align: middle; margin-right: 4px; }
+.legend i.s1 { background: var(--s1); }
+.legend i.s2 { background: var(--s2); }

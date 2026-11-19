@@ -6,6 +6,7 @@ import argparse
 import datetime as dt
 import logging
 import sys
+from pathlib import Path
 
 from apex.config import load_settings
 from apex.db import Database
@@ -204,7 +205,7 @@ def run_trade(db: Database, args: argparse.Namespace, trades_path) -> int:
     return 0
 
 
-def record_paper(db: Database, data_date: dt.date) -> str:
+def record_paper(db: Database, data_date: dt.date, commitments_path=None) -> str:
     """資料日已過月底訊號日、且還沒記錄時，記錄模擬追蹤訊號。回傳說明文字。"""
     from apex import paper
 
@@ -215,11 +216,16 @@ def record_paper(db: Database, data_date: dt.date) -> str:
     if not missing:
         return ""
     paper.record(db, signal, missing)
+    if commitments_path is not None:
+        paper.write_commitments(db, commitments_path)
     return f"已記錄 {signal} 的模擬追蹤訊號：{len(missing)} 個策略"
 
 
 def run_daily(db: Database, args: argparse.Namespace, settings, pipe=None) -> int:
-    """每日流程：更新資料 → 月底記錄模擬追蹤 → 產生本機每日報告。"""
+    """每日流程：更新資料 → 月底記錄模擬追蹤 → 產生本機每日報告（→ 公開網站）。
+
+    模擬追蹤以雲端（GitHub Actions）為準，所以只有加 --record-paper 才記錄；本機預設不記錄。
+    """
     from apex import daily, paper
     from apex.portfolio import text as portfolio_text
 
@@ -229,8 +235,8 @@ def run_daily(db: Database, args: argparse.Namespace, settings, pipe=None) -> in
         print(f"資料更新完成：{len(results)} 個交易日，失敗 {len(failed)}")
     m = daily.market_summary(db)
     notes = []
-    if not args.no_paper:
-        note = record_paper(db, m.data_date)
+    if args.record_paper:
+        note = record_paper(db, m.data_date, settings.commitments_path)
         if note:
             notes.append(note)
             print(note)
@@ -244,7 +250,17 @@ def run_daily(db: Database, args: argparse.Namespace, settings, pipe=None) -> in
     out.write_text(report, encoding="utf-8")
     print(report)
     print(f"報告已存到 {out}")
-    return 1 if m.stale else 0
+    if args.site:
+        from pathlib import Path
+
+        from apex import site
+        perf = {s: paper.performance(db, s) for s in paper.TRACKED}
+        index = site.build(m, site.paper_rows(perf, paper.TRACKED), Path(args.site))
+        print(f"網站已產生 {index}")
+    if m.stale and args.fail_if_stale:
+        print(f"資料不是最新：應到 {m.expected_date}，只到 {m.data_date}")
+        return 1
+    return 0
 
 
 def print_trials(db: Database, args: argparse.Namespace) -> int:
@@ -294,7 +310,15 @@ def main(argv: list[str] | None = None) -> int:
 
     p = sub.add_parser("daily", help="每日流程：更新資料、記錄模擬追蹤、產生本機每日報告")
     p.add_argument("--no-update", action="store_true", help="不更新資料，只產生報告")
-    p.add_argument("--no-paper", action="store_true", help="不記錄模擬追蹤訊號")
+    p.add_argument("--record-paper", action="store_true",
+                   help="月底記錄模擬追蹤訊號（以雲端為準；本機一般不加）")
+    p.add_argument("--site", help="同時產生公開網站到指定目錄（只含市場資訊）")
+    p.add_argument("--fail-if-stale", action="store_true",
+                   help="資料不是最新時以代碼 1 結束（排程最後一次用）")
+
+    p = sub.add_parser("snapshot", help="資料庫加密快照（金鑰放在環境變數 APEX_DB_KEY）")
+    p.add_argument("action", choices=["export", "restore"])
+    p.add_argument("file", help="快照檔路徑")
 
     p = sub.add_parser("paper", help="模擬追蹤：候選策略的紙上交易績效與最新訊號")
     p.add_argument("--record", type=_date, help="記錄指定月底訊號日的訊號（已記錄的不覆蓋）")
@@ -343,7 +367,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--lot", type=int, default=1, help="1＝允許零股、1000＝整張")
     p.add_argument("--delist-recovery", type=float, default=1.0, help="下市時以最後收盤價的多少比例轉現金")
 
-    p = sub.add_parser("research", help="策略研究：標準報表＋試驗紀錄（docs/策略研究計畫.md）")
+    p = sub.add_parser("research", help="策略研究：標準報表＋試驗紀錄（docs/研究報告/策略研究計畫.md）")
     p.add_argument("--strategy", required=True, action="append", help="可重複，例如 equal:50")
     p.add_argument("--period", default="research", choices=["research", "validation", "holdout"])
     p.add_argument("--start", type=_date, help="自訂起日（覆蓋 --period）")
@@ -410,6 +434,16 @@ def main(argv: list[str] | None = None) -> int:
                 done = paper.record(db, args.record)
                 print(f"{args.record}：新記錄 {len(done)} 個策略" if done else f"{args.record} 已全部記錄過")
             print(paper.summary_text(db))
+            return 0
+        if args.cmd == "snapshot":
+            from apex import snapshot
+            db.close()
+            if args.action == "export":
+                size = snapshot.export(settings.db_path, Path(args.file))
+                print(f"已匯出加密快照 {args.file}（{size / 1e6:,.0f} MB）")
+            else:
+                snapshot.restore(Path(args.file), settings.db_path)
+                print(f"已從 {args.file} 還原資料庫 {settings.db_path}")
             return 0
         if args.cmd == "daily" and args.no_update:
             return run_daily(db, args, settings)

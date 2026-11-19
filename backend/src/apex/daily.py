@@ -33,6 +33,7 @@ class MarketSummary:
     vol_pct: float
     breadth: float
     returns: pd.DataFrame  # index：加權報酬指數、0050；columns：近1月、近3月、今年、距一年高點
+    history: pd.DataFrame | None = None  # 近一年：加權報酬指數、0050（起點 = 1）與大盤狀態
 
     @property
     def stale(self) -> bool:
@@ -49,7 +50,10 @@ def market_summary(db: Database, today: dt.date | None = None) -> MarketSummary:
     from apex.backtest import load
     from apex.research.regime import index_series, market_regime
 
-    today = today or dt.date.today()
+    if today is None:
+        now = dt.datetime.now()
+        # 收盤資料大約傍晚才齊，18:00 以前「應有資料」只算到前一個交易日
+        today = now.date() if now.hour >= 18 else now.date() - dt.timedelta(days=1)
     data_date = latest_data_date(db)
     past = [d for d in db.expected_trading_days(today - dt.timedelta(days=14), today) if d <= today]
     expected = past[-1] if past else data_date
@@ -72,9 +76,12 @@ def market_summary(db: Database, today: dt.date | None = None) -> MarketSummary:
             "今年": s.iloc[-1] / ytd.iloc[-1] - 1 if len(ytd) else float("nan"),
             "距一年高點": s.iloc[-1] / s.iloc[-245:].max() - 1,
         }
+    hist = pd.DataFrame({"加權報酬指數": tr, "0050": e50}).iloc[-245:].ffill()
+    hist = hist / hist.iloc[0]
+    hist["regime"] = reg["regime"].reindex(hist.index)
     return MarketSummary(data_date, expected, str(last["regime"]), since, float(last["ma_gap"]),
                          float(last["ma_slope"]), float(last["vol_pct"]), float(last["breadth"]),
-                         pd.DataFrame(rows).T)
+                         pd.DataFrame(rows).T, hist)
 
 
 def market_text(m: MarketSummary) -> str:

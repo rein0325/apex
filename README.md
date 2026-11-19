@@ -12,28 +12,35 @@
 | [技術選型](docs/技術選型.md) | 技術決策與個人資料原則 |
 | [資料層設計](docs/資料層設計.md) | Phase 1 資料流程、資料表、品質檢查 |
 | [回測框架](docs/回測框架.md) | 交易成本、成交模擬、績效指標、基準策略 |
-| [策略研究計畫](docs/策略研究計畫.md) | Phase 2 研究範圍、資料切分、候選策略、過關門檻 |
-| [策略研究報告](docs/策略研究報告.md) | Phase 2 結論：沒有策略在驗證期勝過 0050 |
-| [機器學習研究計畫](docs/機器學習研究計畫.md) | Phase 3 資料集、滾動式檢查、模型與結果 |
-| [機器學習研究報告](docs/機器學習研究報告.md) | Phase 3 結論：ML 有預測力，但沒有選股策略通過驗證期 |
+| [策略研究計畫](docs/研究報告/策略研究計畫.md) | Phase 2 研究範圍、資料切分、候選策略、過關門檻 |
+| [策略研究報告](docs/研究報告/策略研究報告.md) | Phase 2 結論：沒有策略在驗證期勝過 0050 |
+| [機器學習研究計畫](docs/研究報告/機器學習研究計畫.md) | Phase 3 資料集、滾動式檢查、模型與結果 |
+| [機器學習研究報告](docs/研究報告/機器學習研究報告.md) | Phase 3 結論：ML 有預測力，但沒有選股策略通過驗證期 |
 | [持股與每日報告](docs/持股與每日報告.md) | 持股風險管理、候選策略模擬追蹤、本機每日報告 |
+| [網站與每日自動化](docs/網站與每日自動化.md) | GitHub Actions 每日更新、加密資料庫快照、GitHub Pages 網站 |
 
 ## 目錄
 
 ```
-docs/      規格與決策文件
-src/apex/  主程式
-tests/     測試
-probes/    資料來源探測腳本（研究用）
-data/      本機資料（不進版本控制）
-personal/  持股與交易紀錄（只留本機，不進版本控制）
+frontend/            網站畫面（GitHub Pages）：index.html、style.css、app.js，讀取後端產生的 data.json
+backend/             後端（Python）
+  src/apex/          資料擷取、回測、研究、持股、每日流程、網站資料
+  tests/             測試
+  probes/            資料來源探測腳本（研究用）
+  paper/             模擬追蹤訊號的雜湊承諾（公開）
+docs/                規格與決策文件
+  研究報告/           策略與機器學習的研究計畫、研究報告
+.github/workflows/   每日更新（GitHub Actions）、資料來源探測
+data/                本機資料（不進版本控制）
+personal/            持股、交易紀錄、每日報告、資料庫金鑰（只留本機，不進版本控制）
 ```
 
 ## 開發環境
 
-需要 [uv](https://docs.astral.sh/uv/)。
+需要 [uv](https://docs.astral.sh/uv/)。後端指令都在 `backend/` 目錄下執行：
 
 ```bash
+cd backend
 uv sync
 uv run python -m pytest
 uv run python -m ruff check .
@@ -52,7 +59,7 @@ uv run python -m apex backtest --strategy buyhold:0050 --start 2016-01-04 --end 
 日常使用（詳見持股與每日報告）：
 
 ```bash
-uv run python -m apex daily      # 更新資料、月底記錄模擬追蹤、產生本機每日報告（personal/reports/）
+uv run python -m apex daily      # 更新資料、產生本機每日報告（personal/reports/）；模擬追蹤由雲端記錄
 uv run python -m apex trade --date 2026-11-18 --code 0050 --side buy --shares 100 --price 94.5
 uv run python -m apex portfolio  # 持股損益、帳戶回撤、風險提醒
 uv run python -m apex paper      # 候選策略模擬追蹤（未通過驗證，僅追蹤）
@@ -61,7 +68,13 @@ uv run python -m apex paper      # 候選策略模擬追蹤（未通過驗證，
 資料來源探測：
 
 ```bash
-python probes/data_source_probe.py
+python backend/probes/data_source_probe.py
+```
+
+網站預覽（產生 data.json 並複製 frontend/ 到 site/，再用瀏覽器開 site/index.html）：
+
+```bash
+uv run python -m apex daily --no-update --site ../site
 ```
 
 ## 目前進度
@@ -93,5 +106,5 @@ python probes/data_source_probe.py
   - [x] 持股與交易紀錄（只存本機）、持股風險報告與提醒
   - [x] 候選策略模擬追蹤（2026-10-30 起每月底記錄；保留期固定到 2026-10-30，之後為實際追蹤期）
   - [x] 本機每日報告（市場狀態＋持股＋模擬追蹤）
-  - [ ] 網站發布（暫緩，方案見持股與每日報告 §5）
+  - [x] 網站與每日自動化：GitHub Actions＋加密資料庫快照＋GitHub Pages（只放市場資訊）
   - [ ] 策略融合與買賣建議（等有策略通過驗證）

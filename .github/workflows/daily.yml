@@ -1,0 +1,115 @@
+name: 每日更新
+
+# 台灣時間平日 18:30、21:30、23:30 各跑一次（交易所資料陸續公布；融資融券較晚）。
+# 每次都只補缺的資料，重跑無害；最後一次資料仍不是最新才算失敗並寄通知。
+on:
+  schedule:
+    - cron: "30 10 * * 1-5"
+    - cron: "30 13 * * 1-5"
+    - cron: "30 15 * * 1-5"
+  workflow_dispatch:
+
+permissions:
+  contents: write # 推送模擬追蹤的雜湊承諾、更新加密資料庫備份
+  pages: write
+  id-token: write
+
+concurrency:
+  group: daily
+  cancel-in-progress: false
+
+env:
+  TZ: Asia/Taipei
+  PYTHONIOENCODING: utf-8
+  APEX_DB_KEY: ${{ secrets.APEX_DB_KEY }}
+  SNAPSHOT: ${{ github.workspace }}/snapshot/apex-db.tar.enc
+  LAST_RUN: "30 15 * * 1-5"
+
+jobs:
+  daily:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    defaults:
+      run:
+        working-directory: backend # 後端程式；網站畫面在 frontend/
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.13"
+
+      - name: 安裝套件
+        run: uv sync --frozen
+
+      - name: 還原資料庫（Actions 快取，加密）
+        id: cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.SNAPSHOT }}
+          key: apex-db-${{ github.run_id }}
+          restore-keys: apex-db-
+
+      - name: 沒有快取時，從 Release 下載加密快照
+        if: steps.cache.outputs.cache-matched-key == ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release download db-seed --pattern apex-db.tar.enc --dir "$(dirname "$SNAPSHOT")"
+
+      - name: 解密並還原資料庫
+        id: restore
+        run: uv run python -m apex snapshot restore "$SNAPSHOT"
+
+      - name: 每日流程（更新資料、月底記錄模擬追蹤、產生網站）
+        id: daily
+        run: |
+          extra=""
+          if [ "${{ github.event.schedule }}" = "$LAST_RUN" ]; then extra="--fail-if-stale"; fi
+          uv run python -m apex daily --record-paper --site "$GITHUB_WORKSPACE/site" $extra
+
+      - name: 加密匯出資料庫
+        if: always() && steps.restore.outcome == 'success'
+        run: uv run python -m apex snapshot export "$SNAPSHOT"
+
+      - name: 保存資料庫到快取
+        if: always() && steps.restore.outcome == 'success'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.SNAPSHOT }}
+          key: apex-db-${{ github.run_id }}
+
+      - name: 每週五更新 Release 備份（快取 7 天沒用會被刪除）
+        if: always() && steps.restore.outcome == 'success' && github.event.schedule == env.LAST_RUN
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "$(date +%u)" = "5" ]; then gh release upload db-seed "$SNAPSHOT" --clobber; fi
+
+      - name: 推送模擬追蹤雜湊承諾
+        if: always() && steps.daily.outcome != 'skipped'
+        run: |
+          if [ -n "$(git status --porcelain paper/)" ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add paper/
+            git commit -m "Record paper-trading commitments"
+            git pull --rebase
+            git push
+          fi
+
+      - name: 上傳網站
+        if: always() && hashFiles('site/data.json') != ''
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    needs: daily
+    if: always() && needs.daily.result != 'cancelled'
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

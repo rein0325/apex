@@ -6,7 +6,8 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+BACKEND_ROOT = Path(__file__).resolve().parents[2]  # backend/
+REPO_ROOT = BACKEND_ROOT.parent  # data/、personal/、frontend/ 在 repo 根目錄
 
 
 @dataclass(frozen=True)
@@ -32,6 +33,11 @@ class Settings:
     @property
     def trades_path(self) -> Path:
         return self.personal_dir / "trades.csv"
+
+    @property
+    def commitments_path(self) -> Path:
+        """模擬追蹤訊號的雜湊承諾（公開、進版本控制）。"""
+        return BACKEND_ROOT / "paper" / "commitments.csv"
 
 
 def load_settings() -> Settings:

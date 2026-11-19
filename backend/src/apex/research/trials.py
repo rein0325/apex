@@ -1,4 +1,4 @@
-"""試驗紀錄與 Deflated Sharpe Ratio（docs/策略研究計畫.md §2）。
+"""試驗紀錄與 Deflated Sharpe Ratio（docs/研究報告/策略研究計畫.md §2）。
 
 每跑一組策略參數就寫一筆，不刪除。最後報告列出試驗總數，並用 Deflated Sharpe Ratio
 （Bailey & López de Prado, 2014）估計「在試了 N 次之後，最佳結果仍為真」的機率。

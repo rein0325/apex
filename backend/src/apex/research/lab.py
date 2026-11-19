@@ -1,4 +1,4 @@
-"""研究環境與標準報表（docs/策略研究計畫.md §6）。
+"""研究環境與標準報表（docs/研究報告/策略研究計畫.md §6）。
 
 `Lab` 載入一次資料（行情、特徵庫、市場狀態、加權報酬指數），之後可以反覆回測策略，
 每次都產生同一份報表：全期指標、相對基準、逐年、分市場狀態、過關檢查，並寫入試驗紀錄。
@@ -27,7 +27,7 @@ from apex.research.regime import by_regime, index_series, market_regime
 
 @dataclass(frozen=True)
 class Thresholds:
-    """過關門檻（docs/策略研究計畫.md §6；最大回撤 −30% 由使用者 2026-11-19 決定）。"""
+    """過關門檻（docs/研究報告/策略研究計畫.md §6；最大回撤 −30% 由使用者 2026-11-19 決定）。"""
 
     max_drawdown: float = -0.30
     beat_year_ratio: float = 0.6

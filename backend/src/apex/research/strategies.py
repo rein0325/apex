@@ -1,4 +1,4 @@
-"""Phase 2 候選策略登記處（docs/策略研究計畫.md §5）。
+"""Phase 2 候選策略登記處（docs/研究報告/策略研究計畫.md §5）。
 
 策略規格字串格式：`名稱:參數`，例如 `equal:50`。研究策略需要特徵庫，所以由 `build(spec, features)`
 建立；找不到時退回 Phase 1 的基準策略（apex.backtest.strategies）。
@@ -216,7 +216,7 @@ def growth_not_extended(arg: str, f: Features) -> Strategy:
     return _selector(f, arg, score)
 
 
-# ── ML. 機器學習分數（docs/機器學習研究計畫.md）──────────────────────────────
+# ── ML. 機器學習分數（docs/研究報告/機器學習研究計畫.md）──────────────────────────────
 
 _ML_SCORES: dict = {}
 _ML_DATA: dict = {}

@@ -11,7 +11,11 @@
 
 from __future__ import annotations
 
+import csv
 import datetime as dt
+import hashlib
+import secrets
+from pathlib import Path
 
 import pandas as pd
 
@@ -34,11 +38,51 @@ CREATE TABLE IF NOT EXISTS paper_runs (
 CREATE TABLE IF NOT EXISTS paper_signals (
     signal_date DATE, strategy VARCHAR, code VARCHAR, weight DOUBLE, PRIMARY KEY (signal_date, strategy, code)
 );
+ALTER TABLE paper_runs ADD COLUMN IF NOT EXISTS salt VARCHAR;
 """
+COMMIT_COLUMNS = ["signal_date", "strategy", "sha256", "recorded_at"]
 
 
 def ensure_tables(db: Database) -> None:
     db.con.execute(SCHEMA)
+
+
+def commitment(signal_date: dt.date, strategy: str, weights: dict[str, float], salt: str) -> str:
+    """訊號的雜湊承諾：公開雜湊、不公開個股；之後公布 salt 與名單，任何人都能驗證訊號在當時就已記錄。"""
+    body = ";".join(f"{c}:{w:.6f}" for c, w in sorted(weights.items()))
+    return hashlib.sha256(f"{signal_date}|{strategy}|{body}|{salt}".encode()).hexdigest()
+
+
+def write_commitments(db: Database, path: Path) -> int:
+    """把所有已記錄訊號的雜湊寫到公開檔案（paper/commitments.csv），回傳新增筆數。"""
+    ensure_tables(db)
+    existing = set()
+    if path.exists():
+        with path.open(encoding="utf-8", newline="") as fh:
+            existing = {(r["signal_date"], r["strategy"]) for r in csv.DictReader(fh)}
+    unsalted = db.con.execute("SELECT signal_date, strategy FROM paper_runs WHERE salt IS NULL").fetchall()
+    for d, strat in unsalted:
+        db.con.execute("UPDATE paper_runs SET salt = ? WHERE signal_date = ? AND strategy = ?",
+                       [secrets.token_hex(16), d, strat])  # 加入承諾機制前記錄的訊號
+    runs = db.con.execute("SELECT signal_date, strategy, salt, recorded_at FROM paper_runs "
+                          "WHERE salt IS NOT NULL ORDER BY signal_date, strategy").fetchall()
+    new = []
+    for d, strat, salt, at in runs:
+        if (str(d), strat) in existing:
+            continue
+        w = dict(db.con.execute("SELECT code, weight FROM paper_signals "
+                                "WHERE signal_date = ? AND strategy = ?",
+                                [d, strat]).fetchall())
+        new.append([str(d), strat, commitment(d, strat, w, salt), f"{at:%Y-%m-%d %H:%M}"])
+    if new:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fresh = not path.exists()
+        with path.open("a", encoding="utf-8", newline="") as fh:
+            w = csv.writer(fh)
+            if fresh:
+                w.writerow(COMMIT_COLUMNS)
+            w.writerows(new)
+    return len(new)
 
 
 def month_end_signal_days(db: Database, start: dt.date, end: dt.date) -> list[dt.date]:
@@ -104,8 +148,9 @@ def record(db: Database, signal_date: dt.date, specs: list[str] | None = None,
     tg = targets(db, signal_date, specs)
     version = code_version()
     for spec, w in tg.items():
-        db.con.execute("INSERT INTO paper_runs VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                       [signal_date, spec, now, late, len(w), sum(w.values()), signal_date, version])
+        db.con.execute("INSERT INTO paper_runs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                       [signal_date, spec, now, late, len(w), sum(w.values()), signal_date, version,
+                        secrets.token_hex(16)])
         for c, x in w.items():
             db.con.execute("INSERT INTO paper_signals VALUES (?, ?, ?, ?)", [signal_date, spec, c, x])
     return tg
