@@ -16,6 +16,7 @@
 | [策略研究報告](docs/策略研究報告.md) | Phase 2 結論：沒有策略在驗證期勝過 0050 |
 | [機器學習研究計畫](docs/機器學習研究計畫.md) | Phase 3 資料集、滾動式檢查、模型與結果 |
 | [機器學習研究報告](docs/機器學習研究報告.md) | Phase 3 結論：ML 有預測力，但沒有選股策略通過驗證期 |
+| [持股與每日報告](docs/持股與每日報告.md) | 持股風險管理、候選策略模擬追蹤、本機每日報告 |
 
 ## 目錄
 
@@ -46,6 +47,15 @@ uv run python -m ruff check .
 uv run python -m apex update     # 每日更新：行情、公司行動、籌碼、月營收、財報、指數、休市日
 uv run python -m apex status     # 資料狀態
 uv run python -m apex backtest --strategy buyhold:0050 --start 2016-01-04 --end 2026-11-17 --freq once
+```
+
+日常使用（詳見持股與每日報告）：
+
+```bash
+uv run python -m apex daily      # 更新資料、月底記錄模擬追蹤、產生本機每日報告（personal/reports/）
+uv run python -m apex trade --date 2026-11-18 --code 0050 --side buy --shares 100 --price 94.5
+uv run python -m apex portfolio  # 持股損益、帳戶回撤、風險提醒
+uv run python -m apex paper      # 候選策略模擬追蹤（未通過驗證，僅追蹤）
 ```
 
 資料來源探測：
@@ -79,3 +89,9 @@ python probes/data_source_probe.py
   - [x] 超額排名與上漲機率兩種目標、機率校準
   - [x] 「波段、低回撤」門檻（回撤目標 −25%、上限 −30%）
   - [x] 驗證期：MLP 0.6 與核心衛星版未通過；保留期維持鎖定
+- [ ] Phase 4～6：持股管理、網站、模擬運作
+  - [x] 持股與交易紀錄（只存本機）、持股風險報告與提醒
+  - [x] 候選策略模擬追蹤（2026-10-30 起每月底記錄；保留期固定到 2026-10-30，之後為實際追蹤期）
+  - [x] 本機每日報告（市場狀態＋持股＋模擬追蹤）
+  - [ ] 網站發布（暫緩，方案見持股與每日報告 §5）
+  - [ ] 策略融合與買賣建議（等有策略通過驗證）

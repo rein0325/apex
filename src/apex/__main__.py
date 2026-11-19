@@ -170,6 +170,83 @@ def run_ml(db: Database, args: argparse.Namespace) -> int:
     return 0
 
 
+def portfolio_report(db: Database, trades_path, as_of: dt.date | None = None):
+    """讀交易紀錄、取行情、計算持股報告；沒有交易時回傳 None。"""
+    from apex.portfolio import compute, load_prices, load_trades
+
+    trades = load_trades(trades_path)
+    if trades.empty:
+        return None
+    start = trades["date"].min().date() - dt.timedelta(days=150)
+    close, adj = load_prices(db, sorted(set(trades["code"])), start, as_of)
+    sec = db.con.execute("SELECT code, name, sec_type FROM securities").df().set_index("code")
+    return compute(trades, close, adj, sec)
+
+
+def run_trade(db: Database, args: argparse.Namespace, trades_path) -> int:
+    """新增一筆交易到 personal/trades.csv；手續費、證交稅沒給就依券商規則自動計算。"""
+    from apex.backtest import CostModel
+    from apex.portfolio import append_trade, broker_fee, sell_tax
+
+    row = db.con.execute("SELECT sec_type, name FROM securities WHERE code = ?", [args.code]).fetchone()
+    if row is None:
+        print(f"找不到代號 {args.code}")
+        return 1
+    costs = CostModel(commission_discount=args.discount, min_commission=args.min_fee)
+    value = args.shares * args.price
+    fee = args.fee if args.fee is not None else broker_fee(value, costs)
+    tax = args.tax if args.tax is not None else (sell_tax(value, row[0], args.code, costs)
+                                                 if args.side == "sell" else 0)
+    append_trade(trades_path, args.date, args.code, args.side, args.shares, args.price, fee, tax, args.note)
+    side = "買進" if args.side == "buy" else "賣出"
+    print(f"已記錄：{args.date} {side} {args.code} {row[1]} {args.shares:g} 股 @ {args.price:g}，"
+          f"手續費 {fee:g}、證交稅 {tax:g} → {trades_path}")
+    return 0
+
+
+def record_paper(db: Database, data_date: dt.date) -> str:
+    """資料日已過月底訊號日、且還沒記錄時，記錄模擬追蹤訊號。回傳說明文字。"""
+    from apex import paper
+
+    signal = paper.latest_signal_day(db, data_date)
+    if signal is None:
+        return ""
+    missing = [s for s in paper.TRACKED if s not in paper.recorded(db, signal)]
+    if not missing:
+        return ""
+    paper.record(db, signal, missing)
+    return f"已記錄 {signal} 的模擬追蹤訊號：{len(missing)} 個策略"
+
+
+def run_daily(db: Database, args: argparse.Namespace, settings, pipe=None) -> int:
+    """每日流程：更新資料 → 月底記錄模擬追蹤 → 產生本機每日報告。"""
+    from apex import daily, paper
+    from apex.portfolio import text as portfolio_text
+
+    if pipe is not None:
+        results = pipe.update()
+        failed = [r for r in results if not r.ok]
+        print(f"資料更新完成：{len(results)} 個交易日，失敗 {len(failed)}")
+    m = daily.market_summary(db)
+    notes = []
+    if not args.no_paper:
+        note = record_paper(db, m.data_date)
+        if note:
+            notes.append(note)
+            print(note)
+    sections = [daily.market_text(m)]
+    r = portfolio_report(db, settings.trades_path)
+    sections.append(portfolio_text(r) if r else "持股報告：尚無交易紀錄（可用 `apex trade` 新增）。")
+    sections.append(paper.summary_text(db))
+    report = daily.compose(sections)
+    out = settings.personal_dir / "reports" / f"{dt.date.today():%Y-%m-%d}.md"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(report, encoding="utf-8")
+    print(report)
+    print(f"報告已存到 {out}")
+    return 1 if m.stale else 0
+
+
 def print_trials(db: Database, args: argparse.Namespace) -> int:
     from apex.research import trials
 
@@ -199,6 +276,28 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--horizon", action="append", type=int, choices=[20, 60, 120])
     p.add_argument("--target", default="rank", choices=["rank", "up"], help="rank：超額排名；up：上漲機率")
     p.add_argument("--unlock-holdout", action="store_true")
+
+    p = sub.add_parser("portfolio", help="持股報告：損益、回撤、風險提醒（只讀本機交易紀錄）")
+    p.add_argument("--as-of", type=_date, help="計算到指定日期（預設最新資料日）")
+
+    p = sub.add_parser("trade", help="新增一筆交易到本機交易紀錄（personal/trades.csv）")
+    p.add_argument("--date", required=True, type=_date)
+    p.add_argument("--code", required=True)
+    p.add_argument("--side", required=True, choices=["buy", "sell"])
+    p.add_argument("--shares", required=True, type=float)
+    p.add_argument("--price", required=True, type=float)
+    p.add_argument("--fee", type=float, help="手續費；不給就自動計算")
+    p.add_argument("--tax", type=float, help="證交稅；不給就自動計算（賣出）")
+    p.add_argument("--note", default="")
+    p.add_argument("--discount", type=float, default=1.0, help="手續費折扣，例如 0.28")
+    p.add_argument("--min-fee", type=float, default=1.0)
+
+    p = sub.add_parser("daily", help="每日流程：更新資料、記錄模擬追蹤、產生本機每日報告")
+    p.add_argument("--no-update", action="store_true", help="不更新資料，只產生報告")
+    p.add_argument("--no-paper", action="store_true", help="不記錄模擬追蹤訊號")
+
+    p = sub.add_parser("paper", help="模擬追蹤：候選策略的紙上交易績效與最新訊號")
+    p.add_argument("--record", type=_date, help="記錄指定月底訊號日的訊號（已記錄的不覆蓋）")
 
     p = sub.add_parser("calendar", help="同步交易日曆")
     p.add_argument("--start", required=True, help="YYYY-MM")
@@ -305,8 +404,26 @@ def main(argv: list[str] | None = None) -> int:
             return print_trials(db, args)
         if args.cmd == "ml":
             return run_ml(db, args)
+        if args.cmd == "paper":
+            from apex import paper
+            if args.record:
+                done = paper.record(db, args.record)
+                print(f"{args.record}：新記錄 {len(done)} 個策略" if done else f"{args.record} 已全部記錄過")
+            print(paper.summary_text(db))
+            return 0
+        if args.cmd == "daily" and args.no_update:
+            return run_daily(db, args, settings)
+        if args.cmd == "trade":
+            return run_trade(db, args, settings.trades_path)
+        if args.cmd == "portfolio":
+            from apex.portfolio import text
+            r = portfolio_report(db, settings.trades_path, args.as_of)
+            print(text(r) if r else f"尚無交易紀錄（{settings.trades_path}）。可用 `apex trade` 新增。")
+            return 0
         client = HttpClient(settings.request_delay_sec, settings.max_retries, settings.timeout_sec)
         pipe = Pipeline(db, RawStore(settings.raw_dir), http_fetcher(client))
+        if args.cmd == "daily":
+            return run_daily(db, args, settings, pipe)
         if args.cmd == "calendar":
             pipe.sync_calendar(_month_start(args.start), _month_end(args.end))
             return 0

@@ -24,6 +24,15 @@ class Settings:
     def db_path(self) -> Path:
         return self.data_dir / "apex.duckdb"
 
+    @property
+    def personal_dir(self) -> Path:
+        """持股、交易紀錄、每日報告：只存本機（.gitignore 排除）。"""
+        return Path(os.environ.get("APEX_PERSONAL_DIR", REPO_ROOT / "personal"))
+
+    @property
+    def trades_path(self) -> Path:
+        return self.personal_dir / "trades.csv"
+
 
 def load_settings() -> Settings:
     data_dir = Path(os.environ.get("APEX_DATA_DIR", REPO_ROOT / "data"))

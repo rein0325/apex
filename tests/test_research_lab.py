@@ -18,7 +18,9 @@ def test_holdout_is_locked_by_default():
     assert period_range("research", last) == (dt.date(2016, 1, 4), dt.date(2022, 12, 30))
     with pytest.raises(HoldoutLocked):
         period_range("holdout", last)
-    assert period_range("holdout", last, unlock_holdout=True) == (dt.date(2025, 1, 2), last)
+    assert period_range("holdout", last, unlock_holdout=True) == (dt.date(2025, 1, 2), dt.date(2026, 10, 30))
+    with pytest.raises(HoldoutLocked):
+        period_range("live", last)
     with pytest.raises(HoldoutLocked):
         check_range(dt.date(2020, 1, 1), dt.date(2025, 3, 1))
     check_range(dt.date(2020, 1, 1), dt.date(2024, 12, 31))
