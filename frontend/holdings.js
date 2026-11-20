@@ -265,6 +265,7 @@ function renderViews(holdings) {
     head.appendChild(badge);
     head.append(` ${h.code} ${h.name}`);
     el.appendChild(head);
+    chartToggle(h.code, el);
     const p = document.createElement("p");
     p.className = "note";
     if (!v) {

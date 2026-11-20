@@ -76,6 +76,11 @@ function render(d) {
   setValue("vol-pct", d.vol_pct, 0, false);
   setValue("breadth", d.breadth, 0, false);
   if (d.history) chart(d.history);
+  if (d.otc) {
+    $("otc").hidden = false;
+    $("otc").textContent = `櫃買市場：${d.otc.regime}（自 ${d.otc.since} 起），距 200 日均線 ${pct(d.otc.ma_gap)}。` +
+      "依上櫃股票市值自行計算，走勢接近櫃買指數。";
+  }
 
   const rb = document.querySelector("#returns tbody");
   for (const [name, v] of Object.entries(d.returns)) {

@@ -213,7 +213,7 @@ function explain(r) {
 
 // ── 個股卡片 ────────────────────────────────────────────────────────────
 function card(r, shares) {
-  const h = DATA.horizons[0], x = r[`h${h}`], s = r.h20;
+  const h = DATA.horizons[0], x = r[`h${h}`];
   const el = document.createElement("section");
   el.className = "card pick";
   const head = document.createElement("div");
@@ -236,17 +236,19 @@ function card(r, shares) {
     d.querySelector("small").textContent = sub;
     grid.appendChild(d);
   };
-  kpi(`${h} 個交易日後上漲機率`, `${Math.round(x.up * 100)}%`, `分數等級：${x.bucket}`);
+  kpi(`${h} 個交易日後上漲機率`, `${Math.round(x.up * 100)}%`,
+    `分數等級：${x.bucket}${x.beat != null ? `｜比大盤好的機率 ${Math.round(x.beat * 100)}%` : ""}`);
   kpi("預期中間值", pct(x.q50), `約 ${num(x.price.q50)} 元`, cls(x.q50));
   kpi("一半落在", `${pct(x.q25, 0)} ～ ${pct(x.q75, 0)}`, `約 ${num(x.price.q25, 0)} ～ ${num(x.price.q75, 0)} 元`);
   kpi("平均（扣成本）", pct(x.net_mean), "被少數大漲拉高，參考用", cls(x.net_mean));
   el.appendChild(grid);
   const risk = document.createElement("p");
   risk.className = "note";
-  const sub = s ? `｜20 日：上漲機率 ${Math.round(s.up * 100)}%、中間值 ${pct(s.q50)}` : "";
+  const sub = [20, 120].map((k) => r[`h${k}`]).map((s, i) => s ? `｜${[20, 120][i]} 日：上漲機率 ${Math.round(s.up * 100)}%、中間值 ${pct(s.q50)}` : "").join("");
   risk.textContent = `波動 ${r.vol_60 ? Math.round(r.vol_60 * 100) + "%" : "—"}｜近半年最大跌幅 ${pct(r.mdd_120, 0)}${sub}`;
   el.appendChild(risk);
   el.appendChild(explain(r));
+  chartToggle(r.code, el);
   if (shares) {
     const p = document.createElement("p");
     p.className = "calc";
@@ -302,7 +304,8 @@ function render() {
   renderTrack();
   $("meta").textContent = `資料日 ${d.data_date}｜模型每天用最新已知結果重新訓練（訓練資料到 ${d.trained_until}）｜歷史戰績：${d.calibration}`;
   const b = d.base[h];
-  $("base").textContent = `對照：隨便挑一檔股票，過去 ${h} 個交易日後上漲機率 ${Math.round(b.up * 100)}%、中間值 ${pct(b.q50)}。`;
+  $("base").textContent = `對照：隨便挑一檔股票，過去 ${h} 個交易日後上漲機率 ${Math.round(b.up * 100)}%、中間值 ${pct(b.q50)}` +
+    (b.beat != null ? `；比大盤好的機率 ${Math.round(b.beat * 100)}%。` : "。");
   const budget = Number($("budget").value) || 0;
   const picked = renderPlan(budget);
   const pickedCodes = new Set(picked.map((x) => x.r.code));

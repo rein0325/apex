@@ -60,6 +60,7 @@ def data(m: MarketSummary, paper: list[dict], generated: dt.datetime) -> dict:
             {"name": str(i), "r20": _num(r["近1月"]), "r60": _num(r["近3月"]), "n": int(r["檔數"])}
             for i, r in m.industries.iterrows()],
         "status": m.status,
+        "otc": m.otc,
         "paper": paper,
     }
 
@@ -95,6 +96,30 @@ def price_data(db, data_date: dt.date, lookback_days: int = 60) -> dict:
         if code in stocks:
             events.setdefault(code, []).append([str(date), round(float(ratio), 8)])
     return {"date": str(data_date), "stocks": stocks, "events": events}
+
+
+def history_files(db, data_date: dt.date, out_dir: Path, days: int = 245, lookback_days: int = 60) -> int:
+    """個股近一年走勢（還原收盤價，公開資料）：每檔一個 h/代號.json，共用日期放在 h/_dates.json。
+
+    只產生最近 lookback_days 內有成交的證券。回傳檔案數。
+    """
+    df = db.con.execute("""
+        SELECT date, code, adj_close FROM daily_quotes_adj
+        WHERE date BETWEEN ? AND ? AND adj_close > 0
+    """, [data_date - dt.timedelta(days=int(days * 1.6) + 30), data_date]).df()
+    if df.empty:
+        return 0
+    df["date"] = pd.to_datetime(df["date"])
+    px = df.pivot(index="date", columns="code", values="adj_close").sort_index().iloc[-days:]
+    recent = px.iloc[-lookback_days:].notna().any()
+    px = px.loc[:, recent]
+    out = out_dir / "h"
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "_dates.json").write_text(json.dumps([f"{d:%Y-%m-%d}" for d in px.index]), encoding="utf-8")
+    for code in px.columns:
+        vals = [None if pd.isna(v) else float(f"{v:.4g}") for v in px[code]]
+        (out / f"{code}.json").write_text(json.dumps(vals, separators=(",", ":")), encoding="utf-8")
+    return px.shape[1]
 
 
 def build(m: MarketSummary, paper: list[dict], out_dir: Path, generated: dt.datetime | None = None,

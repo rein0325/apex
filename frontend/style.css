@@ -92,3 +92,4 @@ details.card summary { cursor: pointer; font-weight: 700; }
 .view ul { margin: 2px 0; padding-left: 1.2em; }
 .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .two-col table { margin-top: 0; }
+button.small.secondary { margin: 6px 0; }

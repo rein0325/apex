@@ -275,6 +275,7 @@ def run_daily(db: Database, args: argparse.Namespace, settings, pipe=None) -> in
         perf = {s: paper.performance(db, s) for s in paper.TRACKED}
         index = site.build(m, site.paper_rows(perf, paper.TRACKED), Path(args.site),
                            prices=site.price_data(db, m.data_date))
+        print(f"個股走勢檔 {site.history_files(db, m.data_date, Path(args.site))} 個")
         print(f"網站已產生 {index}")
         from apex import vault
         if cands is not None and vault.password():

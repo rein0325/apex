@@ -21,11 +21,14 @@ def test_calibration_uses_realized_returns_by_bucket():
     score = pd.Series(rng.normal(size=len(idx)), index=idx)
     # 分數越高，報酬越好
     y = pd.DataFrame({"fwd_ret": score * 0.05 + rng.normal(0, 0.05, len(idx))}, index=idx)
+    y["excess"] = y["fwd_ret"] - 0.01
     vol = pd.Series(0.3, index=idx)
     t = candidates.calibration(score, y, vol, 60)
     assert t.loc["前 2%", "up"] > t.loc["全部", "up"] > t.loc["後 50%", "up"]
     assert t.loc["前 2%", "q50"] > t.loc["後 50%", "q50"]
     assert t.loc["全部", "n"] == len(idx)
+    assert t.loc["前 2%", "beat"] > t.loc["後 50%", "beat"]
+    assert t.loc["全部", "ex_q50"] == pytest.approx(t.loc["全部", "q50"] - 0.01)
     sd = 0.3 * np.sqrt(60 / 245)
     assert t.loc["全部", "z_q50"] == pytest.approx(t.loc["全部", "q50"] / sd)
 

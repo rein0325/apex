@@ -5,6 +5,12 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="robots" content="noindex">
 <title>候選股票</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<link rel="icon" href="icon-192.png">
+<meta name="theme-color" content="#2563eb">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="台股">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -60,6 +66,7 @@
       <h2>名詞說明</h2>
       <dl class="terms">
         <dt>上漲機率</dt><dd>過去同等級股票，持有期間結束時是賺錢的比例。</dd>
+        <dt>比大盤好的機率</dt><dd>過去同等級股票，同一段期間漲得比大盤（加權報酬指數）多的比例。大盤大跌時，股票賠錢但跌得比大盤少，也算「比大盤好」。</dd>
         <dt>中間值</dt><dd>把過去結果由差排到好，正中間那一個。一半的情況比它好、一半比它差。</dd>
         <dt>一半落在</dt><dd>過去一半的結果落在這個範圍內（25%～75% 分位），依這檔股票自己的波動調整：波動大的股票範圍較寬。</dd>
         <dt>平均（扣成本）</dt><dd>過去同等級股票的平均報酬，扣掉買賣手續費、證交稅與滑價約 0.78%。平均常被少數大漲拉高，所以通常比中間值好看。</dd>
@@ -72,6 +79,7 @@
     <button type="button" id="logout" class="secondary">鎖上（忘記這台裝置的密碼）</button>
   </div>
 </main>
+<script src="chart.js"></script>
 <script src="picks.js"></script>
 </body>
 </html>

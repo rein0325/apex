@@ -36,6 +36,7 @@ class MarketSummary:
     history: pd.DataFrame | None = None  # 近一年：加權報酬指數、0050（起點 = 1）與大盤狀態
     industries: pd.DataFrame | None = None  # 產業強弱：產業 → 近1月、近3月（成交金額加權）、檔數
     status: list | None = None  # 各類資料的更新狀態
+    otc: dict | None = None  # 櫃買市場狀態（用上櫃股票市值加權自算的指數）
 
     @property
     def stale(self) -> bool:
@@ -68,7 +69,8 @@ def market_summary(db: Database, today: dt.date | None = None) -> MarketSummary:
     tr = index_series(data, "TAIEX_TR").dropna()
     e50 = data["adj_close"]["0050"].dropna() if "0050" in data["adj_close"] else pd.Series(dtype=float)
     rows = {}
-    for name, s in (("加權報酬指數", tr), ("0050", e50)):
+    otc_idx = otc_index(db, data)
+    for name, s in (("加權報酬指數", tr), ("0050", e50), ("櫃買股票（自算）", otc_idx)):
         if s.empty:
             continue
         ytd = s[s.index < pd.Timestamp(data_date.year, 1, 1)]
@@ -84,7 +86,40 @@ def market_summary(db: Database, today: dt.date | None = None) -> MarketSummary:
     hist["regime"] = reg["regime"].reindex(hist.index)
     return MarketSummary(data_date, expected, str(last["regime"]), since, float(last["ma_gap"]),
                          float(last["ma_slope"]), float(last["vol_pct"]), float(last["breadth"]),
-                         pd.DataFrame(rows).T, hist, industries, data_status(db, expected))
+                         pd.DataFrame(rows).T, hist, industries, data_status(db, expected),
+                         otc_state(otc_idx, data))
+
+
+def otc_index(db: Database, data) -> pd.Series:
+    """櫃買市場指數（自算）：上櫃普通股依前一日市值加權的還原報酬，串成指數。
+
+    交易所的櫃買指數需要另外的資料來源；這裡用已有的上櫃個股行情與股本自行計算，走勢與櫃買指數相近但不完全相同。
+    """
+    from apex.research.features import Features
+
+    codes = {r[0] for r in db.con.execute(
+        "SELECT DISTINCT code FROM daily_quotes WHERE market = 'TPEX' AND date = ?", [data.days[-1].date()]).fetchall()}
+    f = Features(data)
+    cols = [c for c in f.stocks if c in codes]
+    if not cols:
+        return pd.Series(dtype=float)
+    w = f["mcap"][cols].shift(1)
+    r = f.daily_ret[cols]
+    ret = (w * r).sum(axis=1, min_count=1) / w.where(r.notna()).sum(axis=1)
+    return (1 + ret.fillna(0)).cumprod().iloc[1:]
+
+
+def otc_state(idx: pd.Series, data) -> dict | None:
+    """櫃買市場的狀態：與大盤相同的分類規則（200 日均線、斜率、波動百分位），寬度用上櫃股票。"""
+    from apex.research.regime import classify
+
+    if idx.empty or len(idx) < 260:
+        return None
+    reg = classify(idx).dropna(subset=["regime"])
+    last = reg.iloc[-1]
+    changed = reg["regime"].ne(reg["regime"].shift())
+    return {"regime": str(last["regime"]), "since": str(reg.index[changed][-1].date()),
+            "ma_gap": float(last["ma_gap"]), "vol_pct": float(last["vol_pct"])}
 
 
 def industry_strength(data, min_members: int = 5) -> pd.DataFrame:
@@ -151,6 +186,8 @@ def market_text(m: MarketSummary) -> str:
         top, bottom = m.industries.head(5), m.industries.tail(5).iloc[::-1]
         fmt = lambda df: "、".join(f"{i} {r['近1月']:+.0%}" for i, r in df.iterrows())  # noqa: E731
         lines += ["", f"近 1 個月最強產業：{fmt(top)}", f"近 1 個月最弱產業：{fmt(bottom)}"]
+    if m.otc:
+        lines += ["", f"櫃買市場（自算）：**{m.otc['regime']}**（自 {m.otc['since']} 起），距 200 日均線 {m.otc['ma_gap']:+.1%}"]
     if m.status:
         bad = [x["name"] for x in m.status if not x["ok"]]
         lines += ["", "資料更新狀態：" + ("全部正常" if not bad else "未更新：" + "、".join(bad))]

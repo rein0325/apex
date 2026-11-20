@@ -3,6 +3,7 @@ import datetime as dt
 import json
 import shutil
 
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -75,3 +76,13 @@ def test_snapshot_roundtrip(tmp_path, monkeypatch):
     monkeypatch.setenv(snapshot.KEY_ENV, "wrong")
     with pytest.raises(snapshot.SnapshotError):
         snapshot.restore(snap, tmp_path / "c.duckdb")
+
+
+def test_otc_state_classifies_rising_index():
+    from apex.daily import otc_state
+    days = pd.bdate_range("2023-01-02", periods=800)
+    rng = np.random.default_rng(1)
+    idx = pd.Series(np.exp(np.cumsum(0.001 + rng.normal(0, 0.005, len(days)))), index=days)
+    s = otc_state(idx, None)
+    assert s["regime"] in ("多頭", "高波動") and s["ma_gap"] > 0
+    assert otc_state(idx.iloc[:100], None) is None

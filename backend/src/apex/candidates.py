@@ -23,7 +23,7 @@ from apex.research.features import Features
 from apex.research.ml import ML_START, build_dataset, make_model, walk_forward
 
 MODEL = "lgbm"
-HORIZONS = (60, 20)  # 60 日為主要決策週期（使用者 2026-11-19 決定），20 日為輔助
+HORIZONS = (60, 20, 120)  # 60 日為主要決策週期（使用者 2026-11-19 決定），20、120 日為輔助（規格書 STEP 05B）
 CALIBRATION_YEARS = list(range(2018, 2025))  # 研究期＋驗證期的樣本外預測；不使用保留期
 BUCKETS = [(0.98, 1.0, "前 2%"), (0.95, 0.98, "前 2～5%"), (0.90, 0.95, "前 5～10%"),
            (0.80, 0.90, "前 10～20%"), (0.50, 0.80, "前 20～50%"), (0.0, 0.50, "後 50%")]
@@ -46,7 +46,8 @@ def calibration(pred: pd.Series, y: pd.DataFrame, vol: pd.Series | None = None, 
     給 vol（訊號日的年化波動）時，另外統計「報酬 ÷ 期間波動」的百分位（z_q10…z_mean），
     讓每檔股票可以依自己的波動換算出專屬的區間：波動大的股票，區間自然比較寬。
     """
-    df = pd.DataFrame({"score": pred}).join(y[["fwd_ret"]]).dropna()
+    cols = [c for c in ("fwd_ret", "excess") if c in y]
+    df = pd.DataFrame({"score": pred}).join(y[cols]).dropna(subset=["score", "fwd_ret"])
     if vol is not None:
         df["z"] = df["fwd_ret"] / (vol.reindex(df.index) * np.sqrt(horizon / YEAR_DAYS))
     df["pct"] = df.groupby(level="date")["score"].rank(pct=True)
@@ -56,6 +57,9 @@ def calibration(pred: pd.Series, y: pd.DataFrame, vol: pd.Series | None = None, 
         r = d["fwd_ret"]
         out = {"up": float((r > 0).mean()), **{k: float(r.quantile(q)) for k, q in QUANTILES.items()},
                "mean": float(r.mean()), "n": len(d)}
+        if "excess" in d:  # 相對大盤（加權報酬指數）：比大盤好的機率與超額報酬中間值
+            e = d["excess"].dropna()
+            out |= {"beat": float((e > 0).mean()), "ex_q50": float(e.median())}
         if "z" in d:
             z = d["z"].replace([np.inf, -np.inf], np.nan).dropna()
             out |= {f"z_{k}": float(z.quantile(q)) for k, q in QUANTILES.items()}
@@ -183,8 +187,12 @@ def predict_today(f: Features, data_date: pd.Timestamp, horizon: int, model: str
     dates = ds.X.index.get_level_values("date")
 
     # 歷史戰績：只用 calibration_end 以前的樣本外預測（研究期＋驗證期），保留期不看
-    cal_mask = dates <= pd.Timestamp(calibration_end)
-    cal_ds = type(ds)(ds.X[cal_mask], ds.y[cal_mask], horizon)
+    cal_end = pd.Timestamp(calibration_end)
+    cal_mask = dates <= cal_end
+    cal_y = ds.y[cal_mask].copy()
+    late = (cal_y["label_end"] > cal_end).to_numpy()  # 標籤要用到保留期價格的樣本，不納入戰績
+    cal_y.loc[late, ["fwd_ret", "excess", "label"]] = np.nan
+    cal_ds = type(ds)(ds.X[cal_mask], cal_y, horizon)
     pred, _ = walk_forward(cal_ds, model, CALIBRATION_YEARS)
     vol = f["vol_60"].stack()
     vol.index.names = ["date", "code"]
@@ -248,11 +256,12 @@ def candidates(f: Features, data_date: pd.Timestamp, n: int = 30) -> dict:
             q = {k: mid + (float(t[f"z_{k}"]) - z50) * float(sd) if sd else float(t[k]) for k in QUANTILES}
             q["mean"] = float(t["mean"])
             row[f"h{h}"] = {"pct": p, "bucket": b, "up": float(t["up"]), **q,
+                            "beat": _f(t.get("beat")), "ex_q50": _f(t.get("ex_q50")),
                             "price": {k: round(float(c * (1 + q[k])), 2) for k in ("q25", "q50", "q75")},
                             "net_mean": q["mean"] - ROUND_TRIP_COST, "net_q50": q["q50"] - ROUND_TRIP_COST}
         rows.append(row)
-    base = {h: {k: float(r.table.loc["全部", k]) for k in ("up", "q25", "q50", "q75", "mean")}
-            for h, r in res.items()}
+    base = {h: {k: _f(r.table.loc["全部", k]) if k in r.table else None
+                for k in ("up", "q25", "q50", "q75", "mean", "beat", "ex_q50")} for h, r in res.items()}
     # 候選股之間近 60 日日報酬的相關係數（建議組合避開走勢太像的股票）
     codes = [r["code"] for r in rows]
     corr = f.daily_ret[codes].loc[:data_date].iloc[-60:].corr().round(2)
@@ -264,14 +273,15 @@ def candidates(f: Features, data_date: pd.Timestamp, n: int = 30) -> dict:
         rv = raw_of(code)
         b = bucket_of(float(p))
         t = main.table.loc[b]
-        p20 = res[HORIZONS[1]].scores.get(code)
+        p20 = res[20].scores.get(code)
         scores[code] = {"pct": round(float(p), 4), "pct20": None if p20 is None else round(float(p20), 4),
                         "bucket": b, "up": round(float(t["up"]), 4), "q50": round(float(t["q50"]), 4),
+                        "beat": _f(t.get("beat")),
                         "advice": advice(float(p), rv), "checks": checks(rv),
                         **({"reasons": reasons(main.contrib.loc[code], rv)} if main.contrib is not None else {})}
-    cols = ("up", "q25", "q50", "q75", "mean", "n")
-    tables = {h: [{"bucket": b, **{k: float(r.table.loc[b, k]) for k in cols}} for b in r.table.index]
-              for h, r in res.items()}
+    cols = ("up", "q25", "q50", "q75", "mean", "n", "beat", "ex_q50")
+    tables = {h: [{"bucket": b, **{k: _f(r.table.loc[b, k]) if k in r.table else None for k in cols}}
+                  for b in r.table.index] for h, r in res.items()}
     return {"data_date": str(pd.Timestamp(data_date).date()), "model": MODEL, "horizons": list(HORIZONS),
             "cost": ROUND_TRIP_COST, "candidates": rows, "scores": scores, "base": base, "tables": tables,
             "correlation": correlation,

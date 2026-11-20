@@ -5,6 +5,12 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="robots" content="noindex">
 <title>台股市場狀態</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<link rel="icon" href="icon-192.png">
+<meta name="theme-color" content="#2563eb">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="台股">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -17,6 +23,7 @@
   <section class="card">
     <h2>大盤狀態 <span class="regime" id="regime"></span></h2>
     <p id="regime-text"></p>
+    <p id="otc" class="note" hidden></p>
     <div class="kpis">
       <div class="kpi">距 200 日均線<b id="ma-gap"></b></div>
       <div class="kpi">200 日均線近 20 日變化<b id="ma-slope"></b></div>
