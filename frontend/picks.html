@@ -40,8 +40,7 @@
       </label>
       <button type="button" id="use-cash" class="secondary small-gap" hidden></button>
       <div id="exposure-box" hidden>
-        <div class="banner warn" id="exposure-note"></div>
-        <label class="check"><input type="checkbox" id="follow-exposure" checked> 照建議比例投入</label>
+        <div class="banner warn" id="exposure-note"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l10 18H2zM12 10v4M12 17.5v.5"/></svg><span>大盤目前亮紅燈（風險高）。回測發現這種時候減碼能少賠、但也會少賺，要投入多少由你決定。</span></div>
       </div>
       <div id="plan"></div>
       <div id="rules-help"></div>
@@ -65,7 +64,6 @@
         <dt>上漲機率（圓環）</dt><dd>過去和它同等級的股票，約 3 個月（60 個交易日）後是賺錢的比例。</dd>
         <dt>價格條</dt><dd>黑點是現在的價格，紅線是過去同等級股票 3 個月後的中間結果，淡紅色是一半結果落在的範圍。範圍依這檔股票自己的波動調整。</dd>
         <dt>打勾的標籤</dt><dd>另外用簡單規則檢查：趨勢、營收成長、獲利改善、法人買進。和模型意見一致時比較有把握。</dd>
-        <dt>停損</dt><dd>買進後收盤跌破這個價格，就在下一個交易日賣出，避免小賠變大賠。漲上去之後，從最高點回落太多也賣（「我的持股」頁會自動算）。</dd>
         <dt>比大盤好的機率</dt><dd>過去同等級股票，同一段期間漲得比大盤多的比例。</dd>
         <dt>波動</dt><dd>近 60 日股價上下起伏的程度。數字越大，漲跌越劇烈。</dd>
       </dl>

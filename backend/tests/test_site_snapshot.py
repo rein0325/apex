@@ -34,7 +34,7 @@ def test_site_data_has_market_info_but_no_stock_picks(tmp_path):
     assert d["regime"] == "高波動" and d["stale"] and d["paper"][0]["cum"] == -0.06
     assert len(d["history"]["dates"]) == 30 and d["history"]["regime"][-1] == "高波動"
     assert "2834" not in text and "MLP:lgbm" not in text  # 不公開個股，也只顯示策略說明
-    assert d["risk"]["bad_now"] and d["risk"]["exposure"] == d["risk"]["bad_exposure"]  # 高波動且在均線下
+    assert d["risk"] == {"review_days": 60, "bad_now": True}  # 高波動且在均線下；不建議減碼、不給停損
     # 畫面來自 frontend/
     for f in ("index.html", "app.js", "style.css", "holdings.html", "holdings.js", ".nojekyll"):
         assert (tmp_path / f).exists()
@@ -95,4 +95,4 @@ def test_bad_regime_rule():
     assert bad_regime("高波動", -0.01) and not bad_regime("高波動", 0.02)
     assert not bad_regime("多頭", -0.01) and not bad_regime("盤整", None)
     assert not bad_regime("高波動", float("nan"))
-    assert site_rules("多頭", 0.1)["exposure"] == 1.0
+    assert site_rules("多頭", 0.1) == {"review_days": 60, "bad_now": False}

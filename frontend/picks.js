@@ -18,7 +18,6 @@ const store = {
 };
 
 let BOX = null, DATA = null, RISK = null;
-const FOLLOW_KEY = "apex.follow.exposure.v1";
 
 async function decrypt(box, password) {
   const base = await crypto.subtle.importKey("raw", new TextEncoder().encode(password), "PBKDF2", false, ["deriveKey"]);
@@ -48,10 +47,15 @@ function heldCodes() {
 // ── 依金額組合 ──────────────────────────────────────────────────────────
 // 規則（白話寫在頁面上）：
 // 1. 金額越多選越多檔（2～8 檔），避免每檔金額太小。
-// 2. 同一產業最多四成的檔數，避免全押同一個方向。
+// 2. 同一產業最多四成的檔數，避免全押同一個方向；走勢太像的不重複選。
 // 3. 依波動反比分配：波動越大的股票分得越少（研究中可降低回撤）。
-// 4. 分到的金額買不起 1 股就跳過，改選下一名。
+// 4. 小金額：同一個分數等級裡（網站上的預期報酬相同），優先選分到的錢能買 4 股以上的股票，
+//    避免一檔只買得起 1～2 股、錢分得不平均。
+// 5. 分到的金額買不起 1 股就跳過，改選下一名。
+// 6. 買完整數股剩下的零頭，再逐股補給還沒買滿的股票（每檔最多超過分配 25%），讓錢盡量用完。
 const TARGETS = [[20000, 2], [50000, 3], [100000, 4], [200000, 5], [400000, 6], [Infinity, 8]];
+const MIN_SHARES = 4;
+const OVERFILL = 1.25;
 
 const MAX_CORR = 0.8; // 近 60 日走勢相關係數超過這個值，視為「太像」，不重複選
 function corrOf(a, b) {
@@ -61,15 +65,26 @@ function corrOf(a, b) {
   return i < 0 || j < 0 ? null : c.matrix[i][j];
 }
 
+const buyCost = (shares, price) => shares * price + fee(shares * price);
+
 function plan(cands, budget) {
   const n = TARGETS.find(([lim]) => budget < lim)[1];
   const indCap = Math.max(1, Math.floor(n * 0.4));
+  const est = budget / n; // 平均每檔大約分到的錢
+  const bucketOf = (r) => (r.h60 ? r.h60.bucket : "");
+  const order = new Map();
+  cands.forEach((r) => { if (!order.has(bucketOf(r))) order.set(bucketOf(r), order.size); });
+  const fits = (r) => Math.floor(est / (r.close * 1.001425)) >= MIN_SHARES;
+  // 等級不變；同等級內，價格適合這個金額的排前面，其餘照原本名次
+  const sorted = cands.map((r, i) => ({ r, i }))
+    .sort((a, b) => order.get(bucketOf(a.r)) - order.get(bucketOf(b.r)) || fits(b.r) - fits(a.r) || a.i - b.i)
+    .map((x) => x.r);
   const skipped = new Map();
   let similar = new Map();
   for (let round = 0; round < 40; round++) {
     const chosen = [], perInd = {};
     similar = new Map();
-    for (const r of cands) {
+    for (const r of sorted) {
       if (chosen.length >= n) break;
       if (skipped.has(r.code) || !r.h60 || !(r.close > 0)) continue;
       const ind = r.industry || "其他";
@@ -79,22 +94,39 @@ function plan(cands, budget) {
       perInd[ind] = (perInd[ind] || 0) + 1;
       chosen.push(r);
     }
-    if (!chosen.length) return { n, indCap, rows: [], skipped, similar, cash: budget };
+    if (!chosen.length) return { n, indCap, rows: [], skipped, similar, cash: budget, priced: new Map() };
     const inv = chosen.map((r) => 1 / Math.max(r.vol_60 || 0.4, 0.1));
     const total = inv.reduce((a, b) => a + b, 0);
     const rows = chosen.map((r, i) => {
       const alloc = (budget * inv[i]) / total;
-      const shares = Math.floor(alloc / (r.close * 1.001425));
-      return { r, alloc, shares };
+      return { r, alloc, shares: Math.floor(alloc / (r.close * 1.001425)) };
     });
     const bad = rows.filter((x) => x.shares < 1);
-    if (!bad.length) {
-      const used = rows.reduce((s, x) => s + x.shares * x.r.close + fee(x.shares * x.r.close), 0);
-      return { n, indCap, rows, skipped, similar, cash: budget - used };
+    if (bad.length) {
+      for (const x of bad) skipped.set(x.r.code, `每股 ${num(x.r.close, 0)} 元，超過分到的約 ${money(x.alloc)} 元`);
+      continue;
     }
-    for (const x of bad) skipped.set(x.r.code, `每股 ${num(x.r.close, 0)} 元，超過分到的約 ${money(x.alloc)} 元`);
+    // 零頭補滿：每次給「離分配金額最遠」而且買得起的那檔多買 1 股
+    let cash = budget - rows.reduce((s, x) => s + buyCost(x.shares, x.r.close), 0);
+    for (let k = 0; k < 100000; k++) {
+      const next = rows
+        .filter((x) => buyCost(x.shares + 1, x.r.close) - buyCost(x.shares, x.r.close) <= cash && (x.shares + 1) * x.r.close <= x.alloc * OVERFILL)
+        .sort((a, b) => (b.alloc - b.shares * b.r.close) - (a.alloc - a.shares * a.r.close))[0];
+      if (!next) break;
+      cash -= buyCost(next.shares + 1, next.r.close) - buyCost(next.shares, next.r.close);
+      next.shares += 1;
+    }
+    // 因為價格不適合而改選同等級其他股票的（只列排在被選股票前面的）
+    const priced = new Map();
+    const picked = new Set(chosen.map((r) => r.code));
+    for (const r of cands) {
+      if (picked.has(r.code) || fits(r) || !r.h60) continue;
+      const later = chosen.find((c) => bucketOf(c) === bucketOf(r) && cands.indexOf(c) > cands.indexOf(r));
+      if (later) priced.set(r.code, `每股 ${num(r.close, 0)} 元，分到約 ${money(est)} 元只買得起 ${Math.floor(est / (r.close * 1.001425))} 股；同等級改選價格較適合的 ${later.code} ${later.name}`);
+    }
+    return { n, indCap, rows, skipped, similar, cash, priced };
   }
-  return { n, indCap, rows: [], skipped, similar, cash: budget };
+  return { n, indCap, rows: [], skipped, similar, cash: budget, priced: new Map() };
 }
 
 function renderPlan(budget) {
@@ -102,28 +134,20 @@ function renderPlan(budget) {
   box.innerHTML = "";
   $("rules-help").innerHTML = "";
   const held = heldCodes();
-  // 市場狀態不好時，研究建議只投入一部分（apex/risk.py）
-  let use = budget, reserve = 0;
   $("exposure-box").hidden = !(RISK && RISK.bad_now && budget > 0);
-  if (RISK && RISK.bad_now) {
-    const share = Math.round(RISK.exposure * 100);
-    if ($("follow-exposure").checked) {
-      use = Math.floor(budget * RISK.exposure);
-      reserve = budget - use;
-      $("exposure-note").innerHTML = `${UI.icon("alert")}<span>市場狀態不好，建議先只用 ${share}%：買股票 ${money(use)} 元，保留現金 ${money(reserve)} 元。</span>`;
-    } else {
-      $("exposure-note").innerHTML = `${UI.icon("alert")}<span>市場狀態不好，建議只投入 ${share}%。現在設定全部投入，跌起來會比較痛。</span>`;
-    }
-  }
   if (!(budget > 0)) {
     box.innerHTML = '<p class="subtle">輸入金額後，會幫你決定買哪幾檔、各買幾股。</p>';
     return [];
   }
-  const p = plan(DATA.candidates, use);
+  const p = plan(DATA.candidates, budget);
   $("rules-help").appendChild(UI.help("怎麼配的", [
     `這個金額選 ${p.n} 檔；同一產業最多 ${p.indCap} 檔。`,
     `走勢太像的（近 60 日相關係數超過 ${MAX_CORR}）不重複選。`,
     "波動越大的股票分得越少；分到的錢買不起 1 股就換下一名。",
+    `金額小的時候，同一個分數等級裡（預期報酬相同）優先選能買 ${MIN_SHARES} 股以上的股票，錢分得比較平均。`,
+    "買完整數股剩下的零頭，會再補買幾股，讓錢盡量用完。",
+    "股數多少本身不影響賺多少：同樣投入 5,000 元、漲 5%，買 3 股或 100 股都是賺約 250 元。",
+    ...[...p.priced].map(([c, why]) => `沒選 ${c}：${why}`),
     ...[...p.similar].map(([c, why]) => `沒選 ${c}：${why}`),
     ...[...p.skipped].map(([c, why]) => `略過 ${c}：${why}`),
   ]));
@@ -154,8 +178,8 @@ function renderPlan(budget) {
       `<span class="side"><b>${x.shares.toLocaleString("zh-TW")} 股</b> <span class="subtle">${money(cost)} 元</span></span>` +
       `<span class="minibar"><i style="width:${Math.round((cost / budget) * 100)}%"></i></span></div>`;
   }
-  html += `<div class="line-item"><span class="name subtle">${UI.icon("wallet")} 留著的現金</span><span class="side"><b>${money(p.cash + reserve)} 元</b></span>` +
-    `<span class="minibar"><i style="width:${Math.round(((p.cash + reserve) / budget) * 100)}%;background:var(--muted)"></i></span></div></div>`;
+  html += `<div class="line-item"><span class="name subtle">${UI.icon("wallet")} 留著的現金</span><span class="side"><b>${money(p.cash)} 元</b></span>` +
+    `<span class="minibar"><i style="width:${Math.round((p.cash / budget) * 100)}%;background:var(--muted)"></i></span></div></div>`;
   box.innerHTML = html;
   return p.rows.map((x) => ({ r: x.r, shares: x.shares }));
 }
@@ -177,7 +201,6 @@ function card(r, shares) {
   const chips = (r.checks || []).filter((c) => c.ok !== null).map((c) => UI.chip(c.name, c.ok ? "ok" : "", c.ok ? "check" : "x")).join("");
   const facts = [];
   if (shares) facts.push(`<span>${UI.icon("cart")}建議 <b>${shares.toLocaleString("zh-TW")} 股</b></span>`);
-  if (RISK) facts.push(`<span>${UI.icon("shield")}停損 <b>${num(r.close * (1 - RISK.stop))}</b></span>`);
   facts.push(`<span>${UI.icon("wave")}波動 <b>${r.vol_60 ? Math.round(r.vol_60 * 100) + "%" : "—"}</b></span>`);
   if (x.beat != null) facts.push(`<span>${UI.icon("star")}贏大盤 <b>${Math.round(x.beat * 100)}%</b></span>`);
   el.insertAdjacentHTML("beforeend", `<div style="margin-top:10px">${chips}</div><div class="facts">${facts.join("")}</div>`);
@@ -275,11 +298,6 @@ function init() {
       if (DATA) render();
     });
   }
-  $("follow-exposure").checked = store.get(FOLLOW_KEY) !== "0";
-  $("follow-exposure").addEventListener("change", () => {
-    store.set(FOLLOW_KEY, $("follow-exposure").checked ? "1" : "0");
-    if (DATA) render();
-  });
   riskReady.then((r) => { RISK = r; if (DATA) render(); });
   $("unlock").addEventListener("submit", (e) => { e.preventDefault(); unlock($("password").value, $("remember").checked); });
   $("logout").addEventListener("click", () => { store.del(PW_KEY); location.reload(); });

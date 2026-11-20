@@ -41,16 +41,16 @@ function chart(h) {
   $("chart").innerHTML = p.join("");
 }
 
-// 一句話結論：紅燈先保守、黃燈小心、綠燈可以投入
+// 一句話結論：紅燈風險高、黃燈小心、綠燈趨勢向上。只描述大盤，不建議買賣或減碼（docs/研究報告/出場規則研究.md）
 function verdict(d) {
   const bad = d.risk ? d.risk.bad_now : d.regime === "空頭";
   if (d.regime === "資料不足") return { light: "gray", head: "資料不足", text: "指標還算不出來，先不判斷。" };
   if (bad) {
-    return { light: "red", head: "先保守", text: `大盤${d.regime}，而且在長期均線之下。這種時候大跌的機會比較高，先少放一點錢在股票。` };
+    return { light: "red", head: "風險高", text: `大盤${d.regime}，而且在長期均線之下，大跌的機會比較高。` };
   }
-  if (d.regime === "多頭") return { light: "green", head: "可以投入", text: "大盤在長期均線之上，而且均線往上走。照計畫投入即可。" };
-  if (d.regime === "高波動") return { light: "yellow", head: "小心", text: "大盤還在長期均線之上，但最近漲跌很劇烈。可以投入，但要設好停損。" };
-  return { light: "yellow", head: "小心", text: "趨勢不明確，沒有明顯往上或往下。可以小量投入。" };
+  if (d.regime === "多頭") return { light: "green", head: "趨勢向上", text: "大盤在長期均線之上，而且均線往上走。" };
+  if (d.regime === "高波動") return { light: "yellow", head: "小心", text: "大盤還在長期均線之上，但最近漲跌很劇烈。" };
+  return { light: "yellow", head: "小心", text: "趨勢不明確，沒有明顯往上或往下。" };
 }
 
 function tiles(d) {
@@ -116,11 +116,6 @@ function render(d) {
   $("headline").textContent = v.head;
   $("headline").className = `headline c-${v.light}`;
   $("regime-text").textContent = `${v.text}（${d.regime}，自 ${d.regime_since} 起）`;
-  if (d.risk) {
-    $("exposure").hidden = false;
-    $("exposure-pct").textContent = `最多 ${Math.round(d.risk.exposure * 100)}%`;
-    $("exposure-bar").innerHTML = UI.bar(0, 1, { fill: { v: d.risk.exposure } });
-  }
   tiles(d);
   if (d.otc) {
     const c = { 多頭: "c-red", 空頭: "c-green", 高波動: "c-yellow" }[d.otc.regime] || "c-gray";
@@ -128,12 +123,11 @@ function render(d) {
     $("otc").innerHTML = `<span class="${c}">●</span> 櫃買市場：${UI.esc(d.otc.regime)}，距長期均線 ${pct(d.otc.ma_gap, 0)}`;
   }
   $("regime-help").appendChild(UI.help("燈號怎麼判斷", [
-    "紅燈「先保守」：空頭，或漲跌劇烈而且大盤在 200 日均線之下。研究建議股票最多占總資產" +
-      (d.risk ? ` ${Math.round(d.risk.bad_exposure * 100)}%` : "一半") + "。",
+    "紅燈「風險高」：空頭，或漲跌劇烈而且大盤在 200 日均線之下。",
     "黃燈「小心」：趨勢不明確，或漲跌劇烈但還在均線之上。",
-    "綠燈「可以投入」：大盤在 200 日均線（約一年的平均價格）之上，而且均線往上走。",
+    "綠燈「趨勢向上」：大盤在 200 日均線（約一年的平均價格）之上，而且均線往上走。",
     "漲跌幅度：近 20 日的波動，和過去 3 年相比排在哪裡。轉強的股票：股價在 60 日均線（季線）之上的比例。",
-    "燈號不是買賣訊號，只用來決定放多少錢在股票。",
+    "燈號只描述大盤，不是買賣訊號。回測發現紅燈時減碼能少賠、但也會少賺，要不要減碼由你決定。",
   ]));
 
   if (d.history) chart(d.history);

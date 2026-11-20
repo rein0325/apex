@@ -1,20 +1,18 @@
-"""出場規則與建議投入比例（docs/研究報告/出場規則研究.md）。
+"""網站共用的風險提醒設定（docs/研究報告/出場規則研究.md）。
 
-數字來自回測研究（研究期 2018–2022 選定、驗證期 2023–2024 確認）。
-網站的「我的持股」與「候選股票」頁都用這裡的設定。
-這些是一般性的風險控管規則，不含個股，所以放在公開的 data.json。
+2026-11-21 出場規則研究的結論與使用者決定：
+- 個股停損、移動停損：回測兩段期間都讓結果變差，不採用。
+- 大盤轉壞當天減碼：研究期有效，但驗證期沒有觸發、無法確認；使用者選擇不採用（選項二）。
+所以網站只保留帳戶回撤提醒，以及持有滿 60 個交易日（模型預測期間）重新評估的提醒。
+市場狀態是否「不好」只用來描述大盤，不用來建議減碼。這些設定不含個股，放在公開的 data.json。
 """
 
 from __future__ import annotations
 
 import math
 
-# 由出場規則研究決定（見文件）；改這裡的數字要同步更新文件
 RULES = {
-    "stop": 0.15,  # 停損：收盤價比平均成本低 15%
-    "trail": 0.20,  # 移動停損：收盤價比買進後最高收盤低 20%
     "review_days": 60,  # 持有滿 60 個交易日（模型預測期間）重新評估
-    "bad_exposure": 0.5,  # 市場狀態不好時，股票最多占總資產的比例
 }
 
 
@@ -25,5 +23,4 @@ def bad_regime(regime: str | None, ma_gap: float | None) -> bool:
 
 
 def site_rules(regime: str | None, ma_gap: float | None) -> dict:
-    bad = bad_regime(regime, ma_gap)
-    return {**RULES, "bad_now": bad, "exposure": RULES["bad_exposure"] if bad else 1.0}
+    return {**RULES, "bad_now": bad_regime(regime, ma_gap)}

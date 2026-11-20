@@ -16,7 +16,7 @@ const pct = (x, d = 1) => (x === null || Number.isNaN(x) || !Number.isFinite(x) 
 const cls = (x) => (x > 0 ? "up" : x < 0 ? "down" : "");
 
 let VIEW = null; // 候選股票加密檔裡的全部評分（需要密碼）
-let RISK = null; // data.json 的出場規則與建議投入比例
+let RISK = null; // data.json 的 risk：重新評估天數、大盤是否亮紅燈
 let P = null; // prices.json：{date, stocks: {code: [name, sec_type, close, last_date?]}, events: {code: [[date, ratio]]}}
 
 // ── 費用 ────────────────────────────────────────────────────────────────
@@ -148,18 +148,14 @@ function render() {
 
   const ratio = total ? r.value / total : 0;
   $("k-ratio").textContent = total ? `${Math.round(ratio * 100)}%` : "—";
-  const cap = RISK ? RISK.exposure : 1;
-  $("ratio-bar").innerHTML = UI.bar(0, 1, { fill: { v: ratio }, marks: cap < 1 ? [{ v: cap, cls: "line", title: "建議上限" }] : [] });
-  $("ratio-note").textContent = cap < 1 ? `紅線＝市場不好時建議最多 ${Math.round(cap * 100)}%` : "市場狀態正常，沒有比例限制";
+  $("ratio-bar").innerHTML = UI.bar(0, 1, { fill: { v: ratio } });
+  $("ratio-note").textContent = RISK && RISK.bad_now ? "大盤目前亮紅燈（風險高），要不要降低股票比例由你決定" : "";
 
   const warns = r.errors.map((e) => ["alert", e]);
   for (const [level, msg] of DD_LEVELS) if (dd <= level) { warns.push(["alert", `帳戶${msg}：目前比最高點低 ${pct(dd)}`]); break; }
   for (const h of r.holdings) {
     if (h.type !== "etf" && h.weight > MAX_WEIGHT) warns.push(["alert", `${h.code} ${h.name} 占持股 ${Math.round(h.weight * 100)}%，單一個股超過 30%`]);
     if (h.lastDate) warns.push(["alert", `${h.code} ${h.name} 最後成交日 ${h.lastDate}，可能停止交易或下市`]);
-  }
-  if (RISK && RISK.bad_now && total > 0 && ratio > RISK.exposure + 0.05) {
-    warns.push(["shield", `市場狀態不好，建議股票最多占 ${Math.round(RISK.exposure * 100)}%，目前 ${Math.round(ratio * 100)}%`]);
   }
   $("warnings").innerHTML = warns.map(([ic, w]) => `<div class="banner warn">${UI.icon(ic)}<span>${UI.esc(w)}</span></div>`).join("");
 
@@ -191,9 +187,8 @@ function render() {
   });
 }
 
-// ── 每檔持股一張卡片：一個結論標籤＋出場線位置條＋重點數字，細節收起來 ─────────
-// 停損價＝平均成本 ×（1 − 停損比例）；移動停損價＝這次買進後的最高收盤 ×（1 − 移動停損比例）。
-// 價格都是「今天的還原價」：除權息後成本也跟著換算，不會因為除息誤觸停損。收盤跌破就在下一個交易日賣出。
+// ── 每檔持股一張卡片：一個結論標籤＋持有天數條＋重點數字，細節收起來 ─────────
+// 2026-11-21 出場規則研究：個股停損、移動停損回測都變差，不採用；只保留滿 60 個交易日重新評估的提醒。
 const ADVICE_KIND = { 續抱: "info", 留意: "warn", 考慮減碼: "bad" };
 let cardSeq = 0;
 async function renderCards(holdings) {
@@ -204,60 +199,46 @@ async function renderCards(holdings) {
     return;
   }
   const info = await Promise.all(holdings.map(async (h) => {
-    const avg = h.cost / h.shares;
-    let peak = Math.max(avg, h.close), days = null;
+    let days = null;
     try {
-      const { dates, vals } = await loadHistory(h.code);
-      const from = h.opened || dates[0];
-      dates.forEach((d, i) => { if (d >= from && vals[i] !== null) peak = Math.max(peak, vals[i]); });
-      days = dates.filter((d) => d > from).length;
-    } catch { /* 沒有走勢資料：只用成本與收盤 */ }
-    return { h, avg, peak, days };
+      const { dates } = await loadHistory(h.code);
+      days = dates.filter((d) => d > (h.opened || dates[0])).length;
+    } catch { /* 沒有走勢資料 */ }
+    return { h, days };
   }));
   if (seq !== cardSeq) return; // 畫面已重新整理
   box.innerHTML = "";
-  for (const { h, avg, peak, days } of info) box.appendChild(holdingCard(h, avg, peak, days, holdings));
+  for (const { h, days } of info) box.appendChild(holdingCard(h, days, holdings));
 }
 
-function holdingCard(h, avg, peak, days, holdings) {
+function holdingCard(h, days, holdings) {
   const el = document.createElement("section");
   el.className = "card";
   const px = (x) => x.toLocaleString("zh-TW", { maximumFractionDigits: 2 });
   const gain = h.value - h.cost, ret = h.cost ? h.value / h.cost - 1 : NaN;
   const v = VIEW && VIEW.scores ? VIEW.scores[h.code] : null;
   const isEtf = h.type === "etf";
+  const review = RISK ? RISK.review_days : 60;
 
-  // 結論：出場規則優先（該賣了／重新評估），其次是模型看法
-  let badge = null, line = null;
-  if (RISK && !isEtf) {
-    const stopPx = avg * (1 - RISK.stop), trailPx = peak * (1 - RISK.trail);
-    line = { stopPx, trailPx, at: Math.max(stopPx, trailPx), which: trailPx > stopPx ? "移動停損" : "停損" };
-    if (h.close <= line.at) badge = [`該賣了（跌破${line.which}）`, "bad", "alert"];
-    else if (days !== null && days >= RISK.review_days) badge = ["重新評估（滿 60 天）", "warn", "clock"];
-    else if (h.close <= line.at * 1.05) badge = ["接近出場線", "warn", "alert"];
-  }
+  // 結論：持有滿 60 個交易日先提醒重新評估，其次是模型看法
+  let badge = null;
+  if (!isEtf && days !== null && days >= review) badge = [`重新評估（滿 ${review} 天）`, "warn", "clock"];
   if (!badge && v) badge = [v.advice.level, ADVICE_KIND[v.advice.level] || "", v.advice.level === "續抱" ? "check" : "alert"];
   if (!badge) badge = isEtf ? ["長期持有", "info", "shield"] : ["正常", "good", "check"];
 
   let html = `<div class="hold-head"><b>${UI.esc(h.code)} ${UI.esc(h.name)}</b>${UI.chip(badge[0], badge[1], badge[2])}</div>`;
-  if (line) {
-    const lo = Math.min(line.at, h.close) * 0.95, hi = Math.max(peak, h.close) * 1.02;
-    html += UI.bar(lo, hi, { band: { from: lo, to: line.at, cls: "danger" },
-      marks: [{ v: line.at, cls: "line", title: "出場線" }, { v: peak, cls: "peak", title: "買進後最高" }, { v: h.close, dot: true, title: "現價" }] }) +
-      `<div class="bar-labels"><span>出場線 <b>${px(line.at)}</b></span><span>現價 <b>${px(h.close)}</b></span><span>最高 ${px(peak)}</span></div>`;
+  html += `<div class="big-num ${cls(gain)}" style="font-size:1.4rem;margin-top:6px">${sgnMoney(gain)} <span style="font-size:1rem">（${pct(ret)}）</span></div>`;
+  if (!isEtf && days !== null) {
+    html += `<div class="bar-labels" style="margin-top:8px"><span>${UI.icon("clock")} 持有 <b>${days}</b> 天</span><span>${review} 天重新評估</span></div>` +
+      UI.bar(0, review, { fill: { v: Math.min(days, review) } });
   }
-  const facts = [
-    `<span>損益 <b class="${cls(gain)}">${sgnMoney(gain)}（${pct(ret)}）</b></span>`,
-    `<span>市值 <b>${money(h.value)}</b>｜占 ${Math.round(h.weight * 100)}%</span>`,
-  ];
-  if (days !== null && !isEtf) facts.push(`<span>${UI.icon("clock")}持有 <b>${days}</b> / ${RISK ? RISK.review_days : 60} 天</span>`);
+  const facts = [`<span>市值 <b>${money(h.value)}</b>｜占 ${Math.round(h.weight * 100)}%</span>`, `<span>收盤 <b>${px(h.close)}</b></span>`];
   if (v) facts.push(`<span>${UI.icon("star")}模型分數 <b>${Math.round(v.pct * 100)}</b></span>`);
   html += `<div class="facts">${facts.join("")}</div>`;
   el.innerHTML = html;
 
-  const more = [`約當 ${h.shares.toLocaleString("zh-TW", { maximumFractionDigits: 0 })} 股，平均成本 ${px(avg)}（今天的還原價，含手續費）。`];
-  if (line) more.push(`停損價 ${px(line.stopPx)}（成本 −${Math.round(RISK.stop * 100)}%）；移動停損價 ${px(line.trailPx)}（最高 ${px(peak)} −${Math.round(RISK.trail * 100)}%）。出場線取兩者較高的那個，收盤跌破就在下一個交易日賣出。`);
-  if (isEtf) more.push("ETF 不套用個股停損，看上面的帳戶回撤就好；也不在模型評分範圍。");
+  const more = [`約當 ${h.shares.toLocaleString("zh-TW", { maximumFractionDigits: 0 })} 股，平均成本 ${px(h.cost / h.shares)}（今天的還原價，含手續費）。`];
+  if (isEtf) more.push("ETF 不在模型評分範圍，看上面的帳戶回撤就好。");
   if (v) {
     more.push(`模型看法「${v.advice.level}」：${v.advice.why}`);
     more.push(`模型分數 ${Math.round(v.pct * 100)}（${v.bucket}），過去同等級 60 日後上漲機率 ${Math.round(v.up * 100)}%、中間值 ${pct(v.q50)}`);
@@ -314,15 +295,12 @@ function swapText(v, holdings) {
 function fillHelp() {
   const box = $("cards-help");
   box.innerHTML = "";
-  const pc = (x) => `${Math.round(x * 100)}%`;
-  box.appendChild(UI.help("標籤和出場線怎麼看", [
-    "黑點是現價，紅線是出場線，灰線是這次買進後的最高價；黑點掉進左邊淡紅色區，就該賣了。",
-    RISK ? `出場線＝停損價（平均成本 −${pc(RISK.stop)}）和移動停損價（買進後最高收盤 −${pc(RISK.trail)}）兩者較高的那個。漲上去之後，出場線會跟著往上移，幫你保住一部分獲利。` : "讀不到出場規則（data.json）。",
-    RISK ? `持有滿 ${RISK.review_days} 個交易日（約 3 個月，模型預測的期間）會提醒你重新評估：到「候選股票」頁看它還在不在名單上。` : "",
-    "沒有觸發出場規則時，標籤顯示模型看法：續抱（分數前半段且在季線上）、留意、考慮減碼（分數後 20% 且跌破季線）。",
+  box.appendChild(UI.help("標籤怎麼看", [
+    `持有滿 ${RISK ? RISK.review_days : 60} 個交易日（約 3 個月，模型預測的期間）會提醒你重新評估：到「候選股票」頁看它還在不在名單上。`,
+    "其他時候標籤顯示模型看法：續抱（分數前半段且在季線上）、留意、考慮減碼（分數後 20% 且跌破季線）。",
+    "網站不提供個股停損價：回測發現停損、移動停損都讓結果變差（docs/研究報告/出場規則研究.md）。帳戶回撤的提醒在最上面。",
     "所有價格都換算成今天的還原價（含除權息），和券商顯示的成本可能不同，但報酬一致。",
-    "這些規則來自歷史回測，不保證未來有效；要不要賣由你決定。",
-  ].filter(Boolean)));
+  ]));
 }
 
 // ── 表單 ────────────────────────────────────────────────────────────────
