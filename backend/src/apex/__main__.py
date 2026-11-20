@@ -106,6 +106,8 @@ def run_backtest(db: Database, args: argparse.Namespace) -> int:
 
 
 def run_research(db: Database, args: argparse.Namespace) -> int:
+    import pandas as pd
+
     from apex.backtest import CostModel
     from apex.research.lab import GOALS, Lab
     from apex.research.periods import LABELS, PERIODS, check_range, period_range
@@ -128,11 +130,16 @@ def run_research(db: Database, args: argparse.Namespace) -> int:
     print(f"{LABELS.get(period, '自訂期間')} {start}～{end}")
     for spec in args.strategy:
         for freq in freqs:
-            report = lab.evaluate(spec, build(spec, lab.features), start, end, freq, family=family_of(spec),
+            strategy = build(spec, lab.features)
+            report = lab.evaluate(spec, strategy, start, end, freq, family=family_of(spec),
                                   period=period, random_runs=args.random,
                                   note=" ".join(x for x in (f"goal={args.goal}", args.note) if x))
             print()
             print(report.text())
+            exits = getattr(strategy, "exits", None)
+            if exits:
+                counts = pd.Series([r for _, _, r in exits]).value_counts()
+                print("出場規則觸發：" + "、".join(f"{k} {v} 次" for k, v in counts.items()))
     return 0
 
 

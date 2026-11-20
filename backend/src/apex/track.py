@@ -26,6 +26,7 @@ CREATE TABLE IF NOT EXISTS pick_log (
 """
 TOP = 10  # 成績只看每天前 10 名（網站預設會看到的部分）
 MIN_MATURED = 50  # 到期樣本至少這麼多才判斷模型健康
+MIN_MONTHS = 6  # 「落後大盤」警示至少要有幾個月的到期推薦
 
 
 def ensure(db: Database) -> None:
@@ -103,12 +104,27 @@ def track_record(db: Database, horizon: int = 60, base_up: float | None = None) 
     if out.empty:
         res["health"] = {"status": "累積中", "msg": "推薦後還沒有交易日，明天開始有成績。"}
         return res
+    res.update(summarize(out, horizon, base_up))
+    return res
+
+
+def summarize(out: pd.DataFrame, horizon: int = 60, base_up: float | None = None) -> dict:
+    """推薦結果 → 已到期統計、最近幾天的成績、模型健康（純計算，方便測試）。"""
+    res: dict = {"matured": None, "recent": []}
     done = out[out["matured"] & out["ret"].notna()]
     if len(done):
         res["matured"] = {"n": int(len(done)), "dates": int(done["signal_date"].nunique()),
                           "hit": float((done["ret"] > 0).mean()), "mean": float(done["ret"].mean()),
                           "median": float(done["ret"].median()), "bench": float(done.groupby("signal_date")["bench"].first().mean()),
                           "expected_up": float(done["up"].mean()), "expected_q50": float(done["q50"].mean())}
+        # 策略失效警示：推薦報酬減 0050。同一天、相鄰幾天的推薦彼此高度相關，所以先按推薦月份平均；
+        # 60 日報酬每月取樣會重疊約 3 個月，標準誤再乘 √3，避免把運氣不好誤判成失效
+        month = pd.to_datetime(done["signal_date"]).dt.to_period("M")
+        ex = (done["ret"] - done["bench"]).groupby(month).mean().dropna()
+        res["matured"]["months"] = int(len(ex))
+        res["matured"]["excess"] = float(ex.mean()) if len(ex) else None
+        res["matured"]["excess_se"] = (float(ex.std(ddof=1) / np.sqrt(len(ex)) * np.sqrt(horizon / 20))
+                                       if len(ex) > 1 else None)
     for d, g in list(out.groupby("signal_date"))[-10:][::-1]:
         res["recent"].append({"date": str(d), "days": int(g["days"].iloc[0]), "matured": bool(g["matured"].iloc[0]),
                               "mean": float(g["ret"].mean()), "hit": float((g["ret"] > 0).mean()),
@@ -124,6 +140,10 @@ def track_record(db: Database, horizon: int = 60, base_up: float | None = None) 
         if m["hit"] < base - 2 * se:
             res["health"] = {"status": "失準", "msg": f"實際上漲比例 {m['hit']:.0%}，明顯低於隨便挑的 {base:.0%}，"
                                                      "模型最近可能失靈，建議暫停參考。"}
+        elif (m["months"] >= MIN_MONTHS and m.get("excess_se") is not None
+              and m["excess"] < -2 * m["excess_se"]):
+            res["health"] = {"status": "落後大盤", "msg": f"已到期推薦平均比 0050 差 {m['excess']:+.1%}，"
+                                                       "而且不太像運氣不好，建議先停止照推薦買進，等成績回穩。"}
         elif m["hit"] < m["expected_up"] - 2 * se:
             res["health"] = {"status": "注意", "msg": f"實際上漲比例 {m['hit']:.0%}，低於當時預期的 {m['expected_up']:.0%}。"}
         else:

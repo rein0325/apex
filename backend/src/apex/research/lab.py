@@ -205,7 +205,8 @@ class Lab:
     def backtest(self, strategy: Strategy, start: dt.date, end: dt.date, freq: str = "M",
                  capital: float | None = None) -> tuple[BacktestResult, Recorder]:
         rec = Recorder(strategy)
-        result = run(self.data, rec, start, end, capital or self.capital, freq, self.costs)
+        result = run(self.data, rec, start, end, capital or self.capital, getattr(strategy, "freq", freq),
+                     self.costs, getattr(strategy, "min_trade", 0.0))
         return result, rec
 
     def benchmark_0050(self, start: dt.date, end: dt.date, capital: float) -> BacktestResult:
@@ -247,6 +248,7 @@ class Lab:
                  capital: float | None = None, family: str = "", period: str = "custom", random_runs: int = 0,
                  record: bool = True, note: str = "") -> Report:
         capital = capital or self.capital
+        freq = getattr(strategy, "freq", freq)  # 出場規則每天檢查
         result, rec = self.backtest(strategy, start, end, freq, capital)
         eq = result.equity
         m = summarize(eq, result.trades, self.tr, result.cash)
@@ -268,6 +270,9 @@ class Lab:
         # 核心衛星：檔數與換股比例只算衛星部位，隨機對照＝同樣核心＋隨機衛星
         core = getattr(strategy, "core", None)
         targets = strip_core(rec.targets, core)
+        month_ends = getattr(strategy, "month_ends", None)
+        if month_ends is not None:  # 每天檢查的策略：換股比例只看月底選股
+            targets = {d: t for d, t in targets.items() if d in month_ends}
         replace = replacement_rate(targets)
         rnd = None
         if random_runs:

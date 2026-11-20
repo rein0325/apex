@@ -80,3 +80,23 @@ def test_track_outcomes_matured_and_running():
     assert first["matured"] and first["days"] == 3 and first["ret"] == pytest.approx(0.0)
     second = out.loc[days[7].date()]
     assert not second["matured"] and second["ret"] == pytest.approx(12.5 / 12 - 1)  # 開 days[8]，算到最新收盤
+
+
+def _matured(excess: float, months: int = 8, seed: int = 0) -> pd.DataFrame:
+    rng = np.random.default_rng(seed)
+    rows = []
+    for d in pd.date_range("2027-01-05", periods=months, freq="MS") + pd.Timedelta(days=4):
+        for k in range(10):
+            rows.append({"signal_date": d.date(), "code": f"{1101 + k}", "rank": k + 1, "matured": True,
+                         "days": 60, "ret": 0.10 + excess + rng.normal(0, 0.01), "bench": 0.10, "up": 0.6,
+                         "q50": 0.05})
+    return pd.DataFrame(rows)
+
+
+def test_failure_alert_when_picks_lag_0050():
+    from apex.track import summarize
+    lag = summarize(_matured(-0.05))
+    assert lag["health"]["status"] == "落後大盤"  # 上漲比例 100% 也照樣警示
+    assert lag["matured"]["months"] == 8 and lag["matured"]["excess"] == pytest.approx(-0.05, abs=0.01)
+    assert summarize(_matured(0.01))["health"]["status"] == "正常"
+    assert summarize(_matured(-0.05, months=5))["health"]["status"] == "正常"  # 5 個月（50 筆）還不判斷落後
