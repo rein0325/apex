@@ -252,7 +252,10 @@ def run_daily(db: Database, args: argparse.Namespace, settings, pipe=None) -> in
         print("計算候選股票（約 1 分鐘）…")
         cands = candidates.candidates(candidates.load_for(db, m.data_date), pd.Timestamp(m.data_date))
         from apex import track
-        if args.record_paper:  # 推薦紀錄以雲端為準（與模擬追蹤相同）
+        # 推薦紀錄以雲端為準（與模擬追蹤相同）；等各類資料都更新了（或當天最後一次）才記，
+        # 避免用不完整的籌碼資料
+        complete = all(x["ok"] for x in (m.status or []))
+        if args.record_paper and (complete or args.fail_if_stale):
             track.record(db, cands)
         h0 = cands["horizons"][0]
         cands["track"] = track.track_record(db, h0, cands["base"][h0]["up"])
