@@ -32,3 +32,47 @@ jobs:
 
       - name: 測試
         run: uv run python -m pytest -q
+
+  smoke:
+    # 用真實資料庫跑一次每日流程（不更新資料、不記錄推薦、不發布網站），確認整條流程在真實資料上沒問題
+    if: github.event_name != 'pull_request'
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      TZ: Asia/Taipei
+      PYTHONIOENCODING: utf-8
+      APEX_DB_KEY: ${{ secrets.APEX_DB_KEY }}
+      APEX_VIEW_PASSWORD: ${{ secrets.APEX_VIEW_PASSWORD }}
+      SNAPSHOT: ${{ github.workspace }}/snapshot/apex-db.tar.enc
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.13"
+      - run: uv sync --frozen
+      - name: 還原資料庫（只讀取快取，不寫回）
+        id: cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.SNAPSHOT }}
+          key: apex-db-none
+          restore-keys: apex-db-
+      - name: 沒有快取時從 Release 下載
+        if: steps.cache.outputs.cache-matched-key == ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release download db-seed --pattern apex-db.tar.enc --dir "$(dirname "$SNAPSHOT")"
+      - run: uv run python -m apex snapshot restore "$SNAPSHOT"
+      - name: 試跑每日流程
+        run: uv run python -m apex daily --no-update --site "$GITHUB_WORKSPACE/site-smoke"
+      - name: 檢查產出
+        run: |
+          cd "$GITHUB_WORKSPACE/site-smoke"
+          ls
+          test -s data.json && test -s prices.json && test -s picks.json && test -s h/_dates.json
+          python3 -c "import json; d=json.load(open('data.json')); print(d['data_date'], d['otc']); assert d['otc']"
+          echo "個股走勢檔 $(ls h | wc -l) 個"
