@@ -25,11 +25,15 @@ from apex.backtest.data import MarketData
 
 @dataclass
 class Context:
-    """策略在訊號日可以看到的資料。history 只回傳到訊號日（含）為止。"""
+    """策略在訊號日可以看到的資料。history 只回傳到訊號日（含）為止。
+
+    weights 是訊號日收盤後實際持股的權重（代號 → 市值 ÷ 總資產），出場規則用來知道手上有什麼。
+    """
 
     date: pd.Timestamp
     data: MarketData
     _i: int
+    weights: dict[str, float] = field(default_factory=dict)
 
     def history(self, field: str, lookback: int | None = None) -> pd.DataFrame:
         panel = self.data[field]
@@ -83,7 +87,11 @@ def rebalance_dates(days: pd.DatetimeIndex, freq: str) -> set[pd.Timestamp]:
 
 
 def run(data: MarketData, strategy: Strategy, start: dt.date, end: dt.date, capital: float = 1_000_000,
-        freq: str = "M", costs: CostModel | None = None) -> BacktestResult:
+        freq: str = "M", costs: CostModel | None = None, min_trade: float = 0.0) -> BacktestResult:
+    """min_trade：目標權重與現有權重差距小於總資產的這個比例時不交易（全數賣出不受限）。
+
+    每天檢查出場規則的策略會回傳「維持現有持股」，靠這個門檻避免每天為了微小的權重漂移來回交易。
+    """
     costs = costs or CostModel()
     days = data.days[(data.days >= pd.Timestamp(start)) & (data.days <= pd.Timestamp(end))]
     if len(days) < 2:
@@ -124,7 +132,8 @@ def run(data: MarketData, strategy: Strategy, start: dt.date, end: dt.date, capi
         # 1. 開盤執行委託
         if pending is not None:
             equity_open = cash + sum(u * _px(ao, i, code, last_adj) for code, u in units.items())
-            cash = _execute(pending, t, i, data, units, last_adj, cash, equity_open, costs, trades, events)
+            cash = _execute(pending, t, i, data, units, last_adj, cash, equity_open, costs, trades, events,
+                            min_trade)
             pending = None
 
         # 2. 收盤估值
@@ -138,7 +147,8 @@ def run(data: MarketData, strategy: Strategy, start: dt.date, end: dt.date, capi
 
         # 3. 訊號
         if t in signal_days and t != days[-1]:
-            weights = strategy(Context(t, data, i))
+            held = {code: u * last_adj[code] / equity for code, u in units.items()} if equity > 0 else {}
+            weights = strategy(Context(t, data, i, held))
             total = sum(weights.values())
             if total > 1 + 1e-9:
                 raise ValueError(f"{today} 目標權重和 {total:.3f} > 1")
@@ -148,7 +158,7 @@ def run(data: MarketData, strategy: Strategy, start: dt.date, end: dt.date, capi
     return BacktestResult(pd.Series(equity_s, index=days, name="equity"), pd.Series(cash_s, index=days),
                           trades_df, events,
                           {"start": str(start), "end": str(end), "capital": capital, "freq": freq,
-                           "costs": vars(costs)})
+                           "costs": vars(costs), "min_trade": min_trade})
 
 
 def _px(panel: pd.DataFrame, i: int, code: str, fallback: dict[str, float]) -> float:
@@ -158,7 +168,7 @@ def _px(panel: pd.DataFrame, i: int, code: str, fallback: dict[str, float]) -> f
 
 def _execute(target: dict[str, float], t: pd.Timestamp, i: int, data: MarketData, units: dict[str, float],
              last_adj: dict[str, float], cash: float, equity: float, costs: CostModel, trades: list[Trade],
-             events: list[str]) -> float:
+             events: list[str], min_trade: float = 0.0) -> float:
     o, ao, ac, val = data["open"], data["adj_open"], data["adj_close"], data["value"]
     today = t.date()
     sec_types = data.securities["sec_type"]
@@ -179,7 +189,10 @@ def _execute(target: dict[str, float], t: pd.Timestamp, i: int, data: MarketData
     for code in codes:
         q = quote(code)
         current = units.get(code, 0.0) * (q[1] if q else last_adj.get(code, 0.0))
-        deltas[code] = (target.get(code, 0.0) * equity - current, q)
+        delta = target.get(code, 0.0) * equity - current
+        if target.get(code, 0.0) > 0 and abs(delta) < min_trade * equity:
+            continue
+        deltas[code] = (delta, q)
 
     # 先賣
     for code, (delta, q) in sorted(deltas.items(), key=lambda x: x[1][0]):

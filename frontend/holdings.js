@@ -16,6 +16,7 @@ const pct = (x, d = 1) => (x === null || Number.isNaN(x) || !Number.isFinite(x) 
 const cls = (x) => (x > 0 ? "up" : x < 0 ? "down" : "");
 
 let VIEW = null; // 候選股票加密檔裡的全部評分（需要密碼）
+let RISK = null; // data.json 的 risk：重新評估天數、大盤是否亮紅燈
 let P = null; // prices.json：{date, stocks: {code: [name, sec_type, close, last_date?]}, events: {code: [[date, ratio]]}}
 
 // ── 費用 ────────────────────────────────────────────────────────────────
@@ -46,7 +47,7 @@ function sortedTrades(trades) {
 }
 
 function compute(trades) {
-  const units = {}, cost = {};
+  const units = {}, cost = {}, opened = {};
   let realized = 0;
   const errors = [];
   for (const t of sortedTrades(trades)) {
@@ -55,6 +56,7 @@ function compute(trades) {
     const u = t.shares / factor(c, t.date);
     units[c] = units[c] || 0; cost[c] = cost[c] || 0;
     if (t.side === "buy") {
+      if (units[c] <= 1e-9) opened[c] = t.date; // 這次持有從哪一天開始（全部賣掉後再買算重新開始）
       units[c] += u;
       cost[c] += t.shares * t.price + t.fee;
     } else {
@@ -71,7 +73,7 @@ function compute(trades) {
   for (const c of Object.keys(units)) {
     if (units[c] <= 1e-9) continue;
     const [name, type, close, lastDate] = P.stocks[c];
-    holdings.push({ code: c, name, type, shares: units[c], close, value: units[c] * close, cost: cost[c], lastDate });
+    holdings.push({ code: c, name, type, shares: units[c], close, value: units[c] * close, cost: cost[c], lastDate, opened: opened[c] });
   }
   const value = holdings.reduce((s, h) => s + h.value, 0);
   holdings.forEach((h) => { h.weight = value ? h.value / value : 0; });
@@ -130,52 +132,34 @@ function render() {
   $("k-unreal").className = cls(unreal);
   $("k-real").textContent = sgnMoney(r.realized);
   $("k-real").className = cls(r.realized);
-  $("k-ratio").textContent = total ? `${Math.round((r.value / total) * 100)}%` : "—";
 
   let dd = 0, mdd = 0;
   if (snaps.length) {
     let peak = 0;
     for (const s of snaps) { peak = Math.max(peak, s.index); mdd = Math.min(mdd, s.index / peak - 1); }
     dd = snaps[snaps.length - 1].index / peak - 1;
-    $("k-dd").textContent = pct(dd);
-    $("k-dd").className = cls(dd);
-    $("k-mdd").textContent = `最大 ${pct(mdd)}｜自 ${snaps[0].date}`;
   }
+  $("k-dd").textContent = pct(dd);
+  $("k-dd").className = cls(dd);
+  // 回撤條：越往右跌越多，紅線是目標 −25%，最右邊是上限 −30%
+  $("dd-bar").innerHTML = UI.bar(0, 0.3, { fill: { v: Math.min(-dd, 0.3), cls: "" }, marks: [{ v: 0.25, cls: "line", title: "目標 −25%" }] });
+  $("dd-bar").querySelector(".fill").style.background = dd <= -0.2 ? "#d64545" : dd <= -0.1 ? "#e8a317" : "var(--s1)";
+  $("dd-note").textContent = `紅線＝目標 −25%｜最右＝上限 −30%${snaps.length ? `｜最大 ${pct(mdd)}` : ""}`;
 
-  const warns = [...r.errors];
-  for (const [level, msg] of DD_LEVELS) if (dd <= level) { warns.push(`帳戶${msg}：目前比最高點低 ${pct(dd)}`); break; }
+  const ratio = total ? r.value / total : 0;
+  $("k-ratio").textContent = total ? `${Math.round(ratio * 100)}%` : "—";
+  $("ratio-bar").innerHTML = UI.bar(0, 1, { fill: { v: ratio } });
+  $("ratio-note").textContent = RISK && RISK.bad_now ? "大盤目前亮紅燈（風險高），要不要降低股票比例由你決定" : "";
+
+  const warns = r.errors.map((e) => ["alert", e]);
+  for (const [level, msg] of DD_LEVELS) if (dd <= level) { warns.push(["alert", `帳戶${msg}：目前比最高點低 ${pct(dd)}`]); break; }
   for (const h of r.holdings) {
-    if (h.type !== "etf" && h.weight > MAX_WEIGHT) warns.push(`${h.code} ${h.name} 占持股 ${Math.round(h.weight * 100)}%，單一個股超過 30%`);
-    if (h.lastDate) warns.push(`${h.code} ${h.name} 最後成交日 ${h.lastDate}，可能停止交易或下市`);
+    if (h.type !== "etf" && h.weight > MAX_WEIGHT) warns.push(["alert", `${h.code} ${h.name} 占持股 ${Math.round(h.weight * 100)}%，單一個股超過 30%`]);
+    if (h.lastDate) warns.push(["alert", `${h.code} ${h.name} 最後成交日 ${h.lastDate}，可能停止交易或下市`]);
   }
-  $("warnings").innerHTML = "";
-  for (const w of warns) {
-    const p = document.createElement("p");
-    p.className = "warn";
-    p.textContent = `! ${w}`;
-    $("warnings").appendChild(p);
-  }
+  $("warnings").innerHTML = warns.map(([ic, w]) => `<div class="banner warn">${UI.icon(ic)}<span>${UI.esc(w)}</span></div>`).join("");
 
-  const hb = document.querySelector("#holdings tbody");
-  hb.innerHTML = "";
-  for (const h of r.holdings) {
-    const tr = document.createElement("tr");
-    td(tr, `${h.code} ${h.name}`);
-    td(tr, h.shares.toLocaleString("zh-TW", { maximumFractionDigits: 0 }));
-    td(tr, h.close.toLocaleString("zh-TW"));
-    td(tr, money(h.value));
-    td(tr, sgnMoney(h.value - h.cost), cls(h.value - h.cost));
-    td(tr, pct(h.cost ? h.value / h.cost - 1 : NaN), cls(h.value - h.cost));
-    td(tr, `${Math.round(h.weight * 100)}%`);
-    hb.appendChild(tr);
-  }
-  if (!r.holdings.length) {
-    const tr = document.createElement("tr");
-    td(tr, "尚無持股，請在下方新增交易").colSpan = 7;
-    hb.appendChild(tr);
-  }
-
-  renderViews(r.holdings);
+  renderCards(r.holdings);
 
   const tb = document.querySelector("#trades tbody");
   tb.innerHTML = "";
@@ -203,6 +187,73 @@ function render() {
   });
 }
 
+// ── 每檔持股一張卡片：一個結論標籤＋持有天數條＋重點數字，細節收起來 ─────────
+// 2026-11-21 出場規則研究：個股停損、移動停損回測都變差，不採用；只保留滿 60 個交易日重新評估的提醒。
+const ADVICE_KIND = { 續抱: "info", 留意: "warn", 考慮減碼: "bad" };
+let cardSeq = 0;
+async function renderCards(holdings) {
+  const seq = ++cardSeq;
+  const box = $("cards");
+  if (!holdings.length) {
+    box.innerHTML = '<div class="card subtle">還沒有持股。在下方「新增交易」輸入買進紀錄。</div>';
+    return;
+  }
+  const info = await Promise.all(holdings.map(async (h) => {
+    let days = null;
+    try {
+      const { dates } = await loadHistory(h.code);
+      days = dates.filter((d) => d > (h.opened || dates[0])).length;
+    } catch { /* 沒有走勢資料 */ }
+    return { h, days };
+  }));
+  if (seq !== cardSeq) return; // 畫面已重新整理
+  box.innerHTML = "";
+  for (const { h, days } of info) box.appendChild(holdingCard(h, days, holdings));
+}
+
+function holdingCard(h, days, holdings) {
+  const el = document.createElement("section");
+  el.className = "card";
+  const px = (x) => x.toLocaleString("zh-TW", { maximumFractionDigits: 2 });
+  const gain = h.value - h.cost, ret = h.cost ? h.value / h.cost - 1 : NaN;
+  const v = VIEW && VIEW.scores ? VIEW.scores[h.code] : null;
+  const isEtf = h.type === "etf";
+  const review = RISK ? RISK.review_days : 60;
+
+  // 結論：持有滿 60 個交易日先提醒重新評估，其次是模型看法
+  let badge = null;
+  if (!isEtf && days !== null && days >= review) badge = [`重新評估（滿 ${review} 天）`, "warn", "clock"];
+  if (!badge && v) badge = [v.advice.level, ADVICE_KIND[v.advice.level] || "", v.advice.level === "續抱" ? "check" : "alert"];
+  if (!badge) badge = isEtf ? ["長期持有", "info", "shield"] : ["正常", "good", "check"];
+
+  let html = `<div class="hold-head"><b>${UI.esc(h.code)} ${UI.esc(h.name)}</b>${UI.chip(badge[0], badge[1], badge[2])}</div>`;
+  html += `<div class="big-num ${cls(gain)}" style="font-size:1.4rem;margin-top:6px">${sgnMoney(gain)} <span style="font-size:1rem">（${pct(ret)}）</span></div>`;
+  if (!isEtf && days !== null) {
+    html += `<div class="bar-labels" style="margin-top:8px"><span>${UI.icon("clock")} 持有 <b>${days}</b> 天</span><span>${review} 天重新評估</span></div>` +
+      UI.bar(0, review, { fill: { v: Math.min(days, review) } });
+  }
+  const facts = [`<span>市值 <b>${money(h.value)}</b>｜占 ${Math.round(h.weight * 100)}%</span>`, `<span>收盤 <b>${px(h.close)}</b></span>`];
+  if (v) facts.push(`<span>${UI.icon("star")}模型分數 <b>${Math.round(v.pct * 100)}</b></span>`);
+  html += `<div class="facts">${facts.join("")}</div>`;
+  el.innerHTML = html;
+
+  const more = [`約當 ${h.shares.toLocaleString("zh-TW", { maximumFractionDigits: 0 })} 股，平均成本 ${px(h.cost / h.shares)}（今天的還原價，含手續費）。`];
+  if (isEtf) more.push("ETF 不在模型評分範圍，看上面的帳戶回撤就好。");
+  if (v) {
+    more.push(`模型看法「${v.advice.level}」：${v.advice.why}`);
+    more.push(`模型分數 ${Math.round(v.pct * 100)}（${v.bucket}），過去同等級 60 日後上漲機率 ${Math.round(v.up * 100)}%、中間值 ${pct(v.q50)}`);
+    const rs = v.reasons || {};
+    if (rs.pros && rs.pros.length) more.push(`加分：${rs.pros.join("；")}`);
+    if (rs.cons && rs.cons.length) more.push(`扣分：${rs.cons.join("；")}`);
+    if (v.advice.level !== "續抱") more.push(swapText(v, holdings));
+  } else if (!isEtf && VIEW) {
+    more.push("成交量太小或資料不足，不在模型評分範圍。");
+  }
+  el.appendChild(UI.help("看細節", more));
+  chartToggle(h.code, el);
+  return el;
+}
+
 // ── 模型看法（評分在候選股票的加密檔裡，用候選股票頁記住的密碼解開）──────────
 const b64 = (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
 async function decrypt(box, password) {
@@ -216,78 +267,40 @@ async function loadViews() {
   let pw = null;
   try { pw = localStorage.getItem("apex.viewpw.v1"); } catch { /* 私密模式 */ }
   if (!pw) {
-    $("view-note").innerHTML = '需要密碼：先到 <a href="picks.html">候選股票</a> 頁輸入密碼並勾選「記住密碼」，這裡就會顯示。';
+    $("view-note").innerHTML = '想看模型對持股的看法：先到 <a href="picks.html">候選股票</a> 頁輸入密碼並勾選「記住密碼」。';
     return;
   }
   try {
     const box = await (await fetch(`picks.json?t=${Date.now()}`)).json();
-    const d = await decrypt(box, pw);
-    VIEW = d;
+    VIEW = await decrypt(box, pw);
   } catch {
     $("view-note").textContent = "讀不到模型看法（今天的資料還沒產生，或密碼已變更）。";
     return;
   }
+  $("view-note").textContent = "";
   render();
 }
 
-const ADVICE_CLASS = { 續抱: "keep", 留意: "watch", 考慮減碼: "reduce" };
-
-// 換股比較：和第一名（且還沒持有的）候選股比，預期中間值的差扣掉換股成本（賣出手續費＋證交稅＋買進手續費＋滑價，約 0.8%）
-function swapNote(v, holdings) {
+// 換股比較：和第一名（且還沒持有的）候選股比，預期中間值的差扣掉換股成本（約 0.8%）
+function swapText(v, holdings) {
   const held = new Set(holdings.map((h) => h.code));
   const c = (VIEW.candidates || []).find((x) => !held.has(x.code) && x.h60);
-  const p = document.createElement("p");
-  p.className = "calc";
-  if (!c) { p.textContent = "沒有可比較的候選股。"; return p; }
+  if (!c) return "沒有可比較的候選股。";
   const cost = VIEW.cost || 0.0078;
   const diff = c.h60.q50 - v.q50 - cost;
-  const f = (x) => `${x > 0 ? "+" : ""}${(x * 100).toFixed(1)}%`;
-  p.textContent = `換股比較：若換成候選第一名 ${c.code} ${c.name}，過去同等級 60 日中間值 ${f(c.h60.q50)}，這檔是 ${f(v.q50)}；` +
-    `扣掉換股成本約 ${(cost * 100).toFixed(1)}% 後，預期差 ${f(diff)}。` +
-    (diff > 0.01 ? "換股的預期比較好，但這只是歷史統計，而且新股票的波動可能更大。" :
-      diff > 0 ? "差距很小，換股不一定划算。" : "扣掉成本後換股不划算。");
-  return p;
+  return `換股比較：換成候選第一名 ${c.code} ${c.name}（中間值 ${pct(c.h60.q50)}，這檔 ${pct(v.q50)}），扣掉換股成本約 ${(cost * 100).toFixed(1)}% 後預期差 ${pct(diff)}。` +
+    (diff > 0.01 ? "換股的預期比較好，但這只是歷史統計。" : diff > 0 ? "差距很小，換股不一定划算。" : "扣掉成本後換股不划算。");
 }
-function renderViews(holdings) {
-  if (!VIEW) return;
-  const box = $("views");
+
+function fillHelp() {
+  const box = $("cards-help");
   box.innerHTML = "";
-  $("view-note").textContent = `資料日 ${VIEW.data_date}｜模型分數是全市場可投資股票中的百分位（100% 最好）。`;
-  if (!holdings.length) { box.innerHTML = '<p class="note">還沒有持股。</p>'; return; }
-  for (const h of holdings) {
-    const v = VIEW.scores[h.code];
-    const el = document.createElement("div");
-    el.className = "view";
-    const head = document.createElement("p");
-    const badge = document.createElement("span");
-    badge.className = `advice ${v ? ADVICE_CLASS[v.advice.level] : "none"}`;
-    badge.textContent = v ? v.advice.level : "不評分";
-    head.appendChild(badge);
-    head.append(` ${h.code} ${h.name}`);
-    el.appendChild(head);
-    chartToggle(h.code, el);
-    const p = document.createElement("p");
-    p.className = "note";
-    if (!v) {
-      p.textContent = h.type === "etf" ? "ETF 不在模型評分範圍，請參考市場狀態頁。" : "成交量太小或資料不足，不在模型評分範圍。";
-      el.appendChild(p);
-    } else {
-      p.textContent = `${v.advice.why}｜模型分數 ${Math.round(v.pct * 100)}%（${v.bucket}），過去同等級 60 日後上漲機率 ${Math.round(v.up * 100)}%、中間值 ${v.q50 > 0 ? "+" : ""}${(v.q50 * 100).toFixed(1)}%`;
-      el.appendChild(p);
-      const rs = v.reasons || {};
-      const ok = (v.checks || []).filter((c) => c.ok === true).map((c) => c.name);
-      const ul = document.createElement("ul");
-      ul.className = "note";
-      if (rs.pros && rs.pros.length) { const li = document.createElement("li"); li.textContent = `加分：${rs.pros.join("；")}`; ul.appendChild(li); }
-      if (rs.cons && rs.cons.length) { const li = document.createElement("li"); li.textContent = `扣分：${rs.cons.join("；")}`; ul.appendChild(li); }
-      const li = document.createElement("li");
-      li.textContent = `符合的量化條件：${ok.length ? ok.join("、") : "無"}`;
-      ul.appendChild(li);
-      el.appendChild(ul);
-      if (v.advice.level !== "續抱") el.appendChild(swapNote(v, holdings));
-    }
-    box.appendChild(el);
-  }
+  box.appendChild(UI.help("標籤怎麼看", [
+    `持有滿 ${RISK ? RISK.review_days : 60} 個交易日（約 3 個月，模型預測的期間）會提醒你重新評估：到「候選股票」頁看它還在不在名單上。`,
+    "其他時候標籤顯示模型看法：續抱（分數前半段且在季線上）、留意、考慮減碼（分數後 20% 且跌破季線）。",
+    "網站不提供個股停損價：回測發現停損、移動停損都讓結果變差（docs/研究報告/出場規則研究.md）。帳戶回撤的提醒在最上面。",
+    "所有價格都換算成今天的還原價（含除權息），和券商顯示的成本可能不同，但報酬一致。",
+  ]));
 }
 
 // ── 表單 ────────────────────────────────────────────────────────────────
@@ -418,5 +431,5 @@ function init2() { $("cash").value = ""; $("discount").value = 1; render(); }
 
 fetch(`prices.json?t=${Date.now()}`)
   .then((res) => { if (!res.ok) throw new Error(res.status); return res.json(); })
-  .then((data) => { P = data; init(); loadViews(); })
+  .then((data) => { P = data; init(); loadViews(); riskReady.then((r) => { RISK = r; fillHelp(); render(); }); })
   .catch(() => { $("price-date").textContent = "行情讀取失敗，請稍後再試。"; });

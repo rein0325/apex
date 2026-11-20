@@ -16,62 +16,52 @@
 <body>
 <main>
   <nav class="nav"><a href="index.html" class="active">市場狀態</a><a href="picks.html">候選股票</a><a href="holdings.html">我的持股</a></nav>
-  <h1>台股市場狀態</h1>
   <p class="meta" id="meta">讀取中…</p>
-  <p class="warn" id="stale" hidden></p>
+  <div class="banner warn" id="stale" hidden></div>
 
   <section class="card">
-    <h2>大盤狀態 <span class="regime" id="regime"></span></h2>
-    <p id="regime-text"></p>
-    <p id="otc" class="note" hidden></p>
-    <div class="kpis">
-      <div class="kpi">距 200 日均線<b id="ma-gap"></b></div>
-      <div class="kpi">200 日均線近 20 日變化<b id="ma-slope"></b></div>
-      <div class="kpi">波動在過去三年的位置<b id="vol-pct"></b></div>
-      <div class="kpi">站上 60 日均線的股票<b id="breadth"></b></div>
+    <div class="hero">
+      <div id="light"></div>
+      <div>
+        <div class="headline" id="headline">—</div>
+        <div class="sub" id="regime-text"></div>
+      </div>
     </div>
+    <div class="tiles" id="tiles"></div>
+    <p class="subtle" id="otc" hidden></p>
+    <div id="regime-help"></div>
   </section>
 
   <section class="card">
     <h2>近一年走勢</h2>
     <div class="legend">
-      <span><i class="s1"></i>加權報酬指數</span><span><i class="s2"></i>0050</span>
-      <span class="note">背景顏色＝大盤狀態</span>
+      <span><i class="s1"></i>大盤（含股利）</span><span><i class="s2"></i>0050</span>
+      <span class="note">背景顏色＝當時的大盤狀態</span>
     </div>
     <div id="chart"></div>
-    <table id="returns">
-      <thead><tr><th></th><th>近1月</th><th>近3月</th><th>今年</th><th>距一年高點</th></tr></thead>
-      <tbody></tbody>
-    </table>
+    <div class="ret-grid" id="returns"></div>
   </section>
 
   <section class="card">
     <h2>產業強弱（近 1 個月）</h2>
-    <div class="two-col">
-      <div><p class="why-title up">最強</p><table id="ind-top"><tbody></tbody></table></div>
-      <div><p class="why-title down">最弱</p><table id="ind-bottom"><tbody></tbody></table></div>
-    </div>
-    <p class="note">同產業上市櫃股票依成交金額加權的漲跌幅，括號內是近 3 個月。只列 5 檔以上的產業。</p>
+    <div id="industries"></div>
+    <div id="ind-help"></div>
   </section>
 
   <section class="card">
-    <h2>資料更新狀態</h2>
-    <table id="status"><tbody></tbody></table>
+    <div class="statusline" id="status-line"></div>
+    <details class="help"><summary>看每一項資料</summary><div id="status-list"></div></details>
   </section>
 
-  <section class="card">
-    <h2>研究策略的模擬追蹤</h2>
-    <p class="note">以下策略在歷史驗證中<b>都沒有通過</b>，只用真實行情追蹤後續表現（紙上交易，<span id="paper-since"></span>，扣除約略成本）。
-      不公開個股，也不是任何買賣建議。</p>
-    <table id="paper">
-      <thead><tr><th>策略</th><th>期數</th><th>累積報酬</th><th>0050 同期</th></tr></thead>
-      <tbody></tbody>
-    </table>
-  </section>
+  <details class="card">
+    <summary><b>研究策略的模擬追蹤</b> <span class="note" id="paper-since"></span></summary>
+    <p class="note">這些策略在歷史驗證中都沒有通過，只用真實行情追蹤後續表現（紙上交易，扣除約略成本）。不公開個股，也不是買賣建議。</p>
+    <div class="row-list" id="paper"></div>
+  </details>
 
-  <p class="note">本頁為個人研究用途的市場資訊整理，不構成投資建議；過去表現不代表未來。
-    資料來源：臺灣證券交易所、證券櫃檯買賣中心。</p>
+  <p class="note">個人研究用途的市場資訊整理，不構成投資建議；過去表現不代表未來。資料來源：臺灣證券交易所、證券櫃檯買賣中心。</p>
 </main>
+<script src="ui.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

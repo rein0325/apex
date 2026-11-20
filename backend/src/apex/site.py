@@ -17,6 +17,7 @@ import pandas as pd
 
 from apex.config import REPO_ROOT
 from apex.daily import MarketSummary
+from apex.risk import site_rules
 
 FRONTEND_DIR = REPO_ROOT / "frontend"
 
@@ -61,6 +62,7 @@ def data(m: MarketSummary, paper: list[dict], generated: dt.datetime) -> dict:
             for i, r in m.industries.iterrows()],
         "status": m.status,
         "otc": m.otc,
+        "risk": site_rules(m.regime, m.ma_gap),
         "paper": paper,
     }
 

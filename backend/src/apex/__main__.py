@@ -106,6 +106,8 @@ def run_backtest(db: Database, args: argparse.Namespace) -> int:
 
 
 def run_research(db: Database, args: argparse.Namespace) -> int:
+    import pandas as pd
+
     from apex.backtest import CostModel
     from apex.research.lab import GOALS, Lab
     from apex.research.periods import LABELS, PERIODS, check_range, period_range
@@ -128,11 +130,25 @@ def run_research(db: Database, args: argparse.Namespace) -> int:
     print(f"{LABELS.get(period, '自訂期間')} {start}～{end}")
     for spec in args.strategy:
         for freq in freqs:
-            report = lab.evaluate(spec, build(spec, lab.features), start, end, freq, family=family_of(spec),
+            strategy = build(spec, lab.features)
+            report = lab.evaluate(spec, strategy, start, end, freq, family=family_of(spec),
                                   period=period, random_runs=args.random,
                                   note=" ".join(x for x in (f"goal={args.goal}", args.note) if x))
             print()
             print(report.text())
+            exits = getattr(strategy, "exits", None)
+            if exits:
+                counts = pd.Series([r for _, _, r in exits]).value_counts()
+                print("出場規則觸發：" + "、".join(f"{k} {v} 次" for k, v in counts.items()))
+            m = report.metrics
+            # 一行摘要，方便雲端研究彙整（.github/workflows/research.yml 會把這些行放進公開註記）
+            nan = float("nan")
+            cells = [spec, f"{start}~{end}", f"年化 {m.get('cagr', nan):+.1%}",
+                     f"Sharpe {m.get('sharpe', nan):.2f}",
+                     f"回撤 {m.get('max_drawdown', nan):+.1%}", f"Calmar {m.get('calmar', nan):.2f}",
+                     f"換手 {m.get('turnover', nan):.1f}", f"出場 {len(exits or [])}",
+                     "通過" if report.passed else "未過"]
+            print("SUMMARY|" + "|".join(cells), flush=True)
     return 0
 
 

@@ -155,3 +155,56 @@ def test_random_table_migrates_old_schema(tmp_path):
     ensure_random_table(db)
     ensure_random_table(db)
     assert db.con.execute("SELECT variant, cagr FROM research_random").fetchall() == [("", 0.1)]
+
+
+def _path_data(path: list[float]):
+    from apex.backtest.data import MarketData
+    days = pd.bdate_range("2020-01-01", periods=len(path))
+    px = pd.DataFrame({"1101": path, "1102": [50.0] * len(path)}, index=days)
+    panels = {"open": px, "close": px, "adj_open": px, "adj_close": px, "volume": px * 0 + 1e6,
+              "value": px * 0 + 1e10}
+    sec = pd.DataFrame({c: {"sec_type": "stock", "status": "listed", "last_date": None, "delisted_date": None,
+                            "industry": "水泥工業", "name": c} for c in px.columns}, dtype=object).T
+    return MarketData(days, panels, sec, None)
+
+
+def test_exit_rules_parse():
+    from apex.research.features import Features
+    from apex.research.strategies import ExitRules, build
+    data = _path_data([100.0] * 30)
+    x = build("buyhold:1101+X:15:-:0.5", Features(data))
+    assert isinstance(x, ExitRules) and x.freq == "D"
+    assert (x.stop, x.trail, x.regime) == (pytest.approx(0.15), None, 0.5)
+    x = build("buyhold:1101+X:-:20", Features(data))
+    assert (x.stop, x.trail, x.regime) == (None, pytest.approx(0.2), None)
+
+
+def test_trailing_stop_sells_once_next_open():
+    from apex.backtest import run
+    from apex.research.features import Features
+    from apex.research.strategies import ExitRules
+    path = [100.0] * 5 + [104, 108, 112, 116, 120] + [116.7, 113.3, 110, 106.7, 103.3, 100] + [100.0] * 6
+    data = _path_data(path)
+    x = ExitRules(lambda ctx: {"1101": 1.0}, Features(data), stop=0.25, trail=0.15)
+    r = run(data, x, data.days[0].date(), data.days[-1].date(), 100_000, "D", min_trade=0.02)
+    assert list(r.trades["side"]) == ["buy", "sell"]  # 中間每天維持持股，不為漂移交易
+    assert r.trades["date"].iloc[1] == data.days[16].date()  # 第 15 天收盤跌破最高點 −15%，隔天開盤賣
+    assert x.exits == [(data.days[15], "1101", "移動停損")]
+    assert r.equity.iloc[-1] == pytest.approx(100_000, rel=0.01)
+
+
+def test_stop_loss_and_min_trade():
+    from apex.backtest import run
+    from apex.research.features import Features
+    from apex.research.strategies import ExitRules
+    path = [100.0, 100, 98, 96, 94, 92, 90, 88, 86, 86, 86]
+    data = _path_data(path)
+    x = ExitRules(lambda ctx: {"1101": 0.5, "1102": 0.5}, Features(data), stop=0.10)
+    r = run(data, x, data.days[0].date(), data.days[-1].date(), 100_000, "D", min_trade=0.02)
+    sells = r.trades[r.trades["side"] == "sell"]
+    assert list(sells["code"]) == ["1101"] and sells["date"].iloc[0] == data.days[7].date()
+    assert x.exits == [(data.days[6], "1101", "停損")]  # 收盤 90 ≤ 100 × 0.9
+    # 沒有門檻時，每天回到目標權重會產生許多小額交易
+    y = ExitRules(lambda ctx: {"1101": 0.5, "1102": 0.5}, Features(data), stop=0.10)
+    r0 = run(data, y, data.days[0].date(), data.days[-1].date(), 100_000, "D")
+    assert len(r0.trades) > len(r.trades)

@@ -16,7 +16,6 @@
 <body>
 <main>
   <nav class="nav"><a href="index.html">市場狀態</a><a href="picks.html" class="active">候選股票</a><a href="holdings.html">我的持股</a></nav>
-  <h1>候選股票</h1>
 
   <section class="card" id="lock">
     <h2>🔒 需要密碼</h2>
@@ -31,54 +30,49 @@
 
   <div id="content" hidden>
     <p class="meta" id="meta"></p>
-    <section class="card notice">
-      <h2>先看這裡</h2>
-      <ul>
-        <li>這是電腦模型依<b>最近的趨勢、籌碼、營收與財報</b>挑出的分數最高的股票，<b>不是保證會漲</b>。</li>
-        <li>「預期」是同等級股票<b>過去的真實結果</b>（2018–2024，模型沒看過答案的時期）：例如上漲機率 56%，代表過去這類股票 100 次裡約 56 次在期間結束時是賺的。</li>
-        <li>這個模型在歷史驗證中<b>沒有通過我們設定的門檻</b>（沒有穩定勝過 0050）。要不要買由你決定，建議小額、分散。</li>
-      </ul>
-      <p id="base" class="note"></p>
-    </section>
+    <div class="banner bad" id="alert" hidden></div>
+    <div class="banner info"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18zM12 11v5M12 8v.5"/></svg><span>電腦模型挑出的股票，<b>不是保證會漲</b>。模型在歷史驗證中沒有穩定勝過 0050，建議小額、分散，買不買由你決定。</span></div>
 
     <section class="card">
-      <h2>依你的金額建議組合</h2>
-      <label class="row">總共打算投入（元）
+      <h2>依你的金額配股</h2>
+      <label class="row">打算投入多少錢（元）
         <input type="number" id="budget" min="0" step="1000" inputmode="numeric" placeholder="例如 100000">
       </label>
       <button type="button" id="use-cash" class="secondary small-gap" hidden></button>
-      <p class="note" id="rules"></p>
+      <div id="exposure-box" hidden>
+        <div class="banner warn" id="exposure-note"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l10 18H2zM12 10v4M12 17.5v.5"/></svg><span>大盤目前亮紅燈（風險高）。回測發現這種時候減碼能少賠、但也會少賺，要投入多少由你決定。</span></div>
+      </div>
       <div id="plan"></div>
+      <div id="rules-help"></div>
     </section>
 
     <section class="card">
-      <h2>過去推薦的實際成績</h2>
+      <h2>過去推薦的成績</h2>
       <div id="track"></div>
     </section>
 
-    <h2 class="section-title" id="detail-title">建議組合的個股說明</h2>
+    <h2 class="section-title" id="detail-title">建議買的股票</h2>
     <div id="list"></div>
     <details class="card" id="others-box">
       <summary id="others-title">其他候選</summary>
       <div id="others"></div>
     </details>
-    <section class="card">
-      <h2>名詞說明</h2>
+
+    <details class="card">
+      <summary><b>看不懂的名詞</b></summary>
       <dl class="terms">
-        <dt>上漲機率</dt><dd>過去同等級股票，持有期間結束時是賺錢的比例。</dd>
-        <dt>比大盤好的機率</dt><dd>過去同等級股票，同一段期間漲得比大盤（加權報酬指數）多的比例。大盤大跌時，股票賠錢但跌得比大盤少，也算「比大盤好」。</dd>
-        <dt>中間值</dt><dd>把過去結果由差排到好，正中間那一個。一半的情況比它好、一半比它差。</dd>
-        <dt>一半落在</dt><dd>過去一半的結果落在這個範圍內（25%～75% 分位），依這檔股票自己的波動調整：波動大的股票範圍較寬。</dd>
-        <dt>平均（扣成本）</dt><dd>過去同等級股票的平均報酬，扣掉買賣手續費、證交稅與滑價約 0.78%。平均常被少數大漲拉高，所以通常比中間值好看。</dd>
-        <dt>波動</dt><dd>近 60 日股價上下起伏的程度（年化）。數字越大，漲跌越劇烈。</dd>
-        <dt>近半年最大跌幅</dt><dd>近 120 個交易日內，從高點最多跌了多少。</dd>
-        <dt>為什麼選它／模型扣分的地方</dt><dd>模型打分時，把分數往上推最多、往下拉最多的幾項資料。有時看起來是好事卻被扣分，例如營收成長太快、一年漲太多，是因為過去這種情況之後常會回落。</dd>
-        <dt>量化條件</dt><dd>另外用簡單規則檢查：趨勢、營收成長、獲利改善、法人買進。和模型意見一致時比較有把握；完全不符合時代表兩種方法看法不同，要特別小心。</dd>
+        <dt>上漲機率（圓環）</dt><dd>過去和它同等級的股票，約 3 個月（60 個交易日）後是賺錢的比例。</dd>
+        <dt>價格條</dt><dd>黑點是現在的價格，紅線是過去同等級股票 3 個月後的中間結果，淡紅色是一半結果落在的範圍。範圍依這檔股票自己的波動調整。</dd>
+        <dt>打勾的標籤</dt><dd>另外用簡單規則檢查：趨勢、營收成長、獲利改善、法人買進。和模型意見一致時比較有把握。</dd>
+        <dt>比大盤好的機率</dt><dd>過去同等級股票，同一段期間漲得比大盤多的比例。</dd>
+        <dt>波動</dt><dd>近 60 日股價上下起伏的程度。數字越大，漲跌越劇烈。</dd>
       </dl>
-    </section>
+      <p class="note" id="base"></p>
+    </details>
     <button type="button" id="logout" class="secondary">鎖上（忘記這台裝置的密碼）</button>
   </div>
 </main>
+<script src="ui.js"></script>
 <script src="chart.js"></script>
 <script src="picks.js"></script>
 </body>

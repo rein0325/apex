@@ -6,11 +6,12 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable
 
 import pandas as pd
 
-from apex.backtest.engine import Context, Strategy
+from apex.backtest.engine import Context, Strategy, rebalance_dates
 from apex.backtest.strategies import from_spec, liquid_universe
 from apex.research.features import Features
 
@@ -364,4 +365,87 @@ def core_satellite(arg: str, satellite: Strategy, f: Features) -> CoreSatellite:
     return CoreSatellite(satellite, weight, f, core_regime=regime)
 
 
-OVERLAYS = {"D1": vol_target, "D2": regime_exposure, "D3": inverse_vol}
+# ── 出場規則 ──────────────────────────────────────────────────────────────
+
+class ExitRules:
+    """X：停損、移動停損、市場轉壞時減碼。每天收盤檢查，隔天開盤執行（docs/研究報告/出場規則研究.md）。
+
+    - stop：收盤價比買進價低 stop 以上就全部賣出。
+    - trail：收盤價比買進後的最高收盤價低 trail 以上就全部賣出（移動停損，鎖住部分獲利）。
+    - regime：市場狀態不好（空頭，或高波動且指數在 200 日均線下）時，總持股只留這個比例；
+      狀態好壞轉換的當天立刻重新選股並調整，不等到月底。
+
+    基礎策略只在每月最後一個交易日（與狀態轉換日）選股；其他日子維持現有持股，只處理出場。
+    被停損賣掉的股票，到下次選股前不會再買回。價格都用還原價（除權息不會誤觸停損）。
+    """
+
+    freq = "D"
+    min_trade = 0.02  # 權重差距小於總資產 2% 不交易，避免每天為了漂移來回買賣
+
+    def __init__(self, base: Strategy, f: Features, stop: float | None = None, trail: float | None = None,
+                 regime: float | None = None):
+        self.base, self.f = base, f
+        self.stop, self.trail, self.regime = stop, trail, regime
+        self.month_ends = rebalance_dates(f.days, "M")
+        self.entry: dict[str, float] = {}
+        self.peak: dict[str, float] = {}
+        self.bad: bool | None = None
+        self.exits: list[tuple[pd.Timestamp, str, str]] = []  # (日期, 代號, 原因)
+
+    def _price(self, field: str, i: int, code: str) -> float:
+        panel = self.f.data[field]
+        return float(panel.iat[i, panel.columns.get_loc(code)]) if code in panel.columns else math.nan
+
+    def __call__(self, ctx: Context) -> dict[str, float]:
+        i, held = ctx._i, ctx.weights
+        for c in [c for c in self.entry if c not in held]:
+            self.entry.pop(c)
+            self.peak.pop(c, None)
+        for c in held:
+            close = self._price("adj_close", i, c)
+            if c not in self.entry:  # 第一次看到持有＝今天開盤買進
+                ref = self._price("adj_open", i, c)
+                self.entry[c] = self.peak[c] = close if math.isnan(ref) else ref
+            if not math.isnan(close):
+                self.peak[c] = max(self.peak[c], close)
+
+        bad = self.regime is not None and _bad_regime(self.f, ctx.date)
+        reselect = self.bad is None or ctx.date in self.month_ends or bad != self.bad
+        self.bad = bad
+        if reselect:
+            k = self.regime if bad else 1.0
+            w = {c: v * k for c, v in self.base(ctx).items()}
+        else:
+            w = dict(held)
+
+        for c in list(w):
+            if c not in self.entry:
+                continue
+            close = self._price("adj_close", i, c)
+            if math.isnan(close):
+                continue
+            reason = None
+            if self.stop is not None and close <= self.entry[c] * (1 - self.stop):
+                reason = "停損"
+            elif self.trail is not None and close <= self.peak[c] * (1 - self.trail):
+                reason = "移動停損"
+            if reason:
+                w[c] = 0.0
+                self.exits.append((ctx.date, c, reason))
+        return w
+
+
+def _opt(x: str) -> float | None:
+    return None if x in ("", "-", "0") else float(x)
+
+
+def exit_rules(strategy: Strategy, arg: str, f: Features) -> ExitRules:
+    """X:停損%:移動停損%:壞狀態持股比例，例如 X:15:20:0.5；不用的項目寫 -，例如 X:-:20、X:-:-:0.3。"""
+    parts = (arg.split(":") + ["", "", ""])[:3]
+    stop, trail = (_opt(p) for p in parts[:2])
+    regime = None if parts[2] in ("", "-") else float(parts[2])
+    pct = [None if x is None else x / 100 for x in (stop, trail)]
+    return ExitRules(strategy, f, pct[0], pct[1], regime)
+
+
+OVERLAYS = {"D1": vol_target, "D2": regime_exposure, "D3": inverse_vol, "X": exit_rules}

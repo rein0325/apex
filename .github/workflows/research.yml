@@ -1,0 +1,102 @@
+name: 策略研究
+
+# 在雲端用真實資料庫跑回測研究（本機的 Windows「智慧型應用程式控制」會擋 DuckDB）。
+# runs 是 JSON 陣列，每個元素是一組 `apex research` 參數，各自平行執行；結果放在執行摘要與附件。
+# 觸發方式：手動執行並填 runs；或在 main 以外的分支修改 .github/research-runs.json 後推送
+# （新的工作流程還沒進 main 前無法手動執行，所以保留這個方式）。
+# 研究結果不寫回資料庫快取（試驗紀錄只留在這次執行的附件裡）。
+on:
+  workflow_dispatch:
+    inputs:
+      runs:
+        description: 'JSON 陣列，例如 ["--start 2018-01-02 --end 2022-12-30 --strategy ML:lgbm:60:15:3"]'
+        required: true
+  push:
+    branches-ignore: [main]
+    paths: [.github/research-runs.json, .github/workflows/research.yml]
+
+permissions:
+  contents: read
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      runs: ${{ steps.runs.outputs.runs }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: runs
+        env:
+          INPUT: ${{ inputs.runs }}
+        run: |
+          if [ -n "$INPUT" ]; then echo "$INPUT" > runs.json; else cp .github/research-runs.json runs.json; fi
+          echo "runs=$(jq -c . runs.json)" >> "$GITHUB_OUTPUT"
+
+  research:
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      matrix:
+        args: ${{ fromJSON(needs.plan.outputs.runs) }}
+    env:
+      TZ: Asia/Taipei
+      PYTHONIOENCODING: utf-8
+      APEX_DB_KEY: ${{ secrets.APEX_DB_KEY }}
+      SNAPSHOT: ${{ github.workspace }}/snapshot/apex-db.tar.enc
+      ARGS: ${{ matrix.args }}
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.13"
+      - run: uv sync --frozen
+      - name: 還原資料庫（只讀取快取，不寫回）
+        id: cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.SNAPSHOT }}
+          key: apex-db-none
+          restore-keys: apex-db-
+      - name: 沒有快取時從 Release 下載
+        if: steps.cache.outputs.cache-matched-key == ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release download db-seed --pattern apex-db.tar.enc --dir "$(dirname "$SNAPSHOT")"
+      - run: uv run python -m apex snapshot restore "$SNAPSHOT"
+      - name: 執行研究
+        # 參數以空白分隔（不經過 eval），策略規格本身不含空白
+        # 紀錄要登入才看得到，所以把錯誤與摘要寫成公開的註記（annotation）；失敗時工作一定標示失敗
+        run: |
+          mkdir -p out
+          set +e
+          # shellcheck disable=SC2086
+          uv run python -m apex research $ARGS 2>&1 | tee out/report.md
+          code=${PIPESTATUS[0]}
+          set -e
+          enc() { awk 'BEGIN { ORS = "%0A" } { gsub(/%/, "%25"); gsub(/[[:cntrl:]]/, ""); print }'; }
+          if grep -q '^SUMMARY|' out/report.md; then
+            echo "::notice title=研究摘要::$(grep '^SUMMARY|' out/report.md | enc)"
+          fi
+          if [ "$code" -ne 0 ]; then
+            echo "::error title=研究失敗::$(tail -n 40 out/report.md | enc)"
+            exit "$code"
+          fi
+      - name: 摘要
+        if: always()
+        run: |
+          { echo '```'; echo "apex research $ARGS"; cat out/report.md; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - name: 附件名稱
+        id: name
+        if: always()
+        run: echo "id=$(echo "$ARGS" | md5sum | cut -c1-8)" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: research-${{ steps.name.outputs.id }}
+          path: backend/out/
+          retention-days: 14
