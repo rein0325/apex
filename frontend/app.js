@@ -3,30 +3,10 @@
 
 // 台股慣例：紅漲綠跌
 const REGIME_COLOR = { 多頭: "#d64545", 空頭: "#2e9e5b", 盤整: "#8a8f98", 高波動: "#e08a1e", 資料不足: "#8a8f98" };
-const REGIME_TEXT = {
-  多頭: "指數在長期均線之上且均線上揚。",
-  空頭: "指數在長期均線之下且均線下彎，留意持股回撤。",
-  盤整: "趨勢不明確。",
-  高波動: "近期波動處於歷史高檔，價格可能大幅震盪。",
-  資料不足: "資料不足以判斷。",
-};
 
 const $ = (id) => document.getElementById(id);
 const pct = (x, d = 1) => (x === null || x === undefined || Number.isNaN(x) ? "—" : `${x > 0 ? "+" : ""}${(x * 100).toFixed(d)}%`);
 const cls = (x) => (x > 0 ? "up" : x < 0 ? "down" : "");
-
-function setValue(id, x, digits = 1, signed = true) {
-  const el = $(id);
-  el.textContent = signed ? pct(x, digits) : `${Math.round(x * 100)}%`;
-  if (signed) el.className = cls(x);
-}
-
-function cell(row, text, className = "") {
-  const td = document.createElement("td");
-  td.textContent = text;
-  if (className) td.className = className;
-  row.appendChild(td);
-}
 
 function chart(h) {
   const W = 420, H = 200, L = 44, R = 10, T = 10, B = 22;
@@ -61,69 +41,111 @@ function chart(h) {
   $("chart").innerHTML = p.join("");
 }
 
+// 一句話結論：紅燈先保守、黃燈小心、綠燈可以投入
+function verdict(d) {
+  const bad = d.risk ? d.risk.bad_now : d.regime === "空頭";
+  if (d.regime === "資料不足") return { light: "gray", head: "資料不足", text: "指標還算不出來，先不判斷。" };
+  if (bad) {
+    return { light: "red", head: "先保守", text: `大盤${d.regime}，而且在長期均線之下。這種時候大跌的機會比較高，先少放一點錢在股票。` };
+  }
+  if (d.regime === "多頭") return { light: "green", head: "可以投入", text: "大盤在長期均線之上，而且均線往上走。照計畫投入即可。" };
+  if (d.regime === "高波動") return { light: "yellow", head: "小心", text: "大盤還在長期均線之上，但最近漲跌很劇烈。可以投入，但要設好停損。" };
+  return { light: "yellow", head: "小心", text: "趨勢不明確，沒有明顯往上或往下。可以小量投入。" };
+}
+
+function tiles(d) {
+  const up = d.ma_gap > 0 && d.ma_slope > 0, down = d.ma_gap < 0 && d.ma_slope < 0;
+  const trend = up ? ["up", "c-red", "向上"] : down ? ["down", "c-green", "向下"]
+    : d.ma_gap < 0 ? ["down", "c-green", "轉弱"] : d.ma_gap > 0 ? ["up", "c-red", "轉強"] : ["flat", "c-gray", "盤整"];
+  const v = d.vol_pct;
+  const vol = v > 0.8 ? ["c-yellow", "很大"] : v > 0.5 ? ["c-gray", "偏大"] : ["c-gray", "平穩"];
+  const b = d.breadth;
+  const br = b >= 0.5 ? "c-red" : b < 0.3 ? "c-green" : "c-gray";
+  const tile = (ic, c, label, value, small) =>
+    `<div class="tile"><span class="${c}">${UI.icon(ic)}</span>${label}<b>${value}</b>${small}</div>`;
+  $("tiles").innerHTML =
+    tile(trend[0], trend[1], "長期趨勢", trend[2], `距均線 ${pct(d.ma_gap, 0)}`) +
+    tile("wave", vol[0], "漲跌幅度", vol[1], v == null ? "" : `比過去 3 年 ${Math.round(v * 100)}% 的時間大`) +
+    tile("bars", br, "轉強的股票", b == null ? "—" : `${Math.round(b * 100)}%`, "股價在季線之上");
+}
+
+function returns(d) {
+  const keys = ["近1月", "近3月", "今年", "距一年高點"];
+  let html = "<span></span>" + keys.map((k) => `<span class="h">${k === "距一年高點" ? "距高點" : k}</span>`).join("");
+  for (const [name, v] of Object.entries(d.returns)) {
+    const label = { 加權報酬指數: "大盤", "櫃買股票（自算）": "櫃買" }[name] || name;
+    html += `<span>${UI.esc(label)}</span>` + keys.map((k) => `<span class="v ${cls(v[k])}">${pct(v[k], 0)}</span>`).join("");
+  }
+  $("returns").innerHTML = html;
+}
+
+function industries(list) {
+  const rows = list.length > 10 ? [...list.slice(0, 5), null, ...list.slice(-5)] : list;
+  const max = Math.max(...list.map((r) => Math.abs(r.r20 || 0)), 0.01);
+  $("industries").innerHTML = rows.map((r) => {
+    if (!r) return '<div class="subtle" style="text-align:center">⋯</div>';
+    const w = (Math.abs(r.r20 || 0) / max) * 50;
+    const pos = r.r20 >= 0 ? `left:50%;width:${w}%;background:var(--up)` : `left:${50 - w}%;width:${w}%;background:var(--down)`;
+    return `<div class="ind-row"><span class="n">${UI.esc(r.name)}</span>` +
+      `<span class="track"><i class="axis"></i><i style="${pos}"></i></span><span class="v ${cls(r.r20)}">${pct(r.r20, 0)}</span></div>`;
+  }).join("");
+  $("ind-help").appendChild(UI.help("怎麼算的", [
+    "同產業上市櫃股票依成交金額加權的近 1 個月漲跌幅，上面 5 個最強、下面 5 個最弱。",
+    "只列 5 檔以上的產業。紅色是漲、綠色是跌。",
+  ]));
+}
+
+function status(list) {
+  const bad = list.filter((s) => !s.ok);
+  $("status-line").innerHTML = bad.length
+    ? `<span class="c-yellow">${UI.icon("alert")}</span>有 ${bad.length} 項資料還沒更新：${bad.map((s) => UI.esc(s.name)).join("、")}`
+    : `<span class="c-green">${UI.icon("check")}</span>資料都已更新（${list.length} 項）`;
+  $("status-list").innerHTML = list.map((s) =>
+    `<div class="line-item"><span>${s.ok ? UI.icon("check", "c-green") : UI.icon("alert", "c-yellow")} ${UI.esc(s.name)}</span>` +
+    `<span class="side subtle">${UI.esc(s.date || "—")}${s.note ? `（${UI.esc(s.note)}）` : ""}</span></div>`).join("");
+}
+
 function render(d) {
-  $("meta").textContent = `資料日 ${d.data_date}｜更新時間 ${d.generated.replace("T", " ")}（台灣時間）`;
+  $("meta").textContent = `資料日 ${d.data_date}｜更新 ${d.generated.replace("T", " ")}`;
   if (d.stale) {
     $("stale").hidden = false;
-    $("stale").textContent = `資料不是最新：最近應有資料的交易日是 ${d.expected_date}，目前只到 ${d.data_date}。交易所可能尚未公布，稍後會再更新。`;
+    $("stale").innerHTML = `${UI.icon("clock")}<span>資料不是最新：最近應有資料的交易日是 ${d.expected_date}，目前只到 ${d.data_date}。交易所可能尚未公布，稍後會再更新。</span>`;
   }
-  const r = $("regime");
-  r.textContent = d.regime;
-  r.style.background = REGIME_COLOR[d.regime] || "#8a8f98";
-  $("regime-text").textContent = `${REGIME_TEXT[d.regime] || ""}自 ${d.regime_since} 起。`;
-  setValue("ma-gap", d.ma_gap);
-  setValue("ma-slope", d.ma_slope, 2);
-  setValue("vol-pct", d.vol_pct, 0, false);
-  setValue("breadth", d.breadth, 0, false);
-  if (d.history) chart(d.history);
+  const v = verdict(d);
+  $("light").innerHTML = UI.light(v.light);
+  $("headline").textContent = v.head;
+  $("headline").className = `headline c-${v.light}`;
+  $("regime-text").textContent = `${v.text}（${d.regime}，自 ${d.regime_since} 起）`;
+  if (d.risk) {
+    $("exposure").hidden = false;
+    $("exposure-pct").textContent = `最多 ${Math.round(d.risk.exposure * 100)}%`;
+    $("exposure-bar").innerHTML = UI.bar(0, 1, { fill: { v: d.risk.exposure } });
+  }
+  tiles(d);
   if (d.otc) {
+    const c = { 多頭: "c-red", 空頭: "c-green", 高波動: "c-yellow" }[d.otc.regime] || "c-gray";
     $("otc").hidden = false;
-    $("otc").textContent = `櫃買市場：${d.otc.regime}（自 ${d.otc.since} 起），距 200 日均線 ${pct(d.otc.ma_gap)}。` +
-      "依上櫃股票市值自行計算，走勢接近櫃買指數。";
+    $("otc").innerHTML = `<span class="${c}">●</span> 櫃買市場：${UI.esc(d.otc.regime)}，距長期均線 ${pct(d.otc.ma_gap, 0)}`;
   }
+  $("regime-help").appendChild(UI.help("燈號怎麼判斷", [
+    "紅燈「先保守」：空頭，或漲跌劇烈而且大盤在 200 日均線之下。研究建議股票最多占總資產" +
+      (d.risk ? ` ${Math.round(d.risk.bad_exposure * 100)}%` : "一半") + "。",
+    "黃燈「小心」：趨勢不明確，或漲跌劇烈但還在均線之上。",
+    "綠燈「可以投入」：大盤在 200 日均線（約一年的平均價格）之上，而且均線往上走。",
+    "漲跌幅度：近 20 日的波動，和過去 3 年相比排在哪裡。轉強的股票：股價在 60 日均線（季線）之上的比例。",
+    "燈號不是買賣訊號，只用來決定放多少錢在股票。",
+  ]));
 
-  const rb = document.querySelector("#returns tbody");
-  for (const [name, v] of Object.entries(d.returns)) {
-    const tr = document.createElement("tr");
-    cell(tr, name);
-    for (const k of ["近1月", "近3月", "今年", "距一年高點"]) cell(tr, pct(v[k]), cls(v[k]));
-    rb.appendChild(tr);
-  }
+  if (d.history) chart(d.history);
+  returns(d);
+  if (d.industries && d.industries.length) industries(d.industries);
+  if (d.status) status(d.status);
 
-  if (d.industries && d.industries.length) {
-    const fill = (id, rows) => {
-      const tb = document.querySelector(`#${id} tbody`);
-      for (const r of rows) {
-        const tr = document.createElement("tr");
-        cell(tr, r.name);
-        cell(tr, `${pct(r.r20, 0)}（${pct(r.r60, 0)}）`, cls(r.r20));
-        tb.appendChild(tr);
-      }
-    };
-    fill("ind-top", d.industries.slice(0, 5));
-    fill("ind-bottom", d.industries.slice(-5).reverse());
-  }
-  if (d.status) {
-    const sb = document.querySelector("#status tbody");
-    for (const s of d.status) {
-      const tr = document.createElement("tr");
-      cell(tr, `${s.ok ? "✓" : "!"} ${s.name}`, s.ok ? "" : "warn");
-      cell(tr, `${s.date || "—"}${s.note ? `（${s.note}）` : ""}`);
-      sb.appendChild(tr);
-    }
-  }
-
-  const pb = document.querySelector("#paper tbody");
   const since = d.paper.map((p) => p.since).filter(Boolean).sort()[0];
   $("paper-since").textContent = since ? `自 ${since} 起` : "尚未開始";
-  for (const p of d.paper) {
-    const tr = document.createElement("tr");
-    cell(tr, p.name);
-    cell(tr, String(p.periods));
-    cell(tr, p.periods ? pct(p.cum) : "—", p.periods ? cls(p.cum) : "");
-    cell(tr, p.periods ? pct(p.bench_cum) : "—", p.periods ? cls(p.bench_cum) : "");
-    pb.appendChild(tr);
-  }
+  $("paper").innerHTML = d.paper.map((p) =>
+    `<div class="line-item"><span class="name">${UI.esc(p.name)}</span>` +
+    `<span class="side">${p.periods ? `<b class="${cls(p.cum)}">${pct(p.cum)}</b> <span class="subtle">0050 ${pct(p.bench_cum)}</span>` : '<span class="subtle">尚未開始</span>'}</span></div>`).join("");
 }
 
 fetch(`data.json?t=${Date.now()}`)

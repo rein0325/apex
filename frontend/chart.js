@@ -2,13 +2,29 @@
 "use strict";
 
 let __dates = null;
+const __hist = {};
+
+// 回傳 {dates, vals}（還原收盤價，以最新一天為基準）；沒有資料時丟出錯誤
+async function loadHistory(code) {
+  if (!__dates) __dates = await (await fetch("h/_dates.json")).json();
+  if (!__hist[code]) {
+    __hist[code] = fetch(`h/${code}.json`).then((res) => {
+      if (!res.ok) throw new Error(res.status);
+      return res.json();
+    });
+  }
+  try {
+    return { dates: __dates, vals: await __hist[code] };
+  } catch (e) {
+    delete __hist[code];
+    throw e;
+  }
+}
+
 async function stockChart(code, el) {
   el.textContent = "讀取中…";
   try {
-    if (!__dates) __dates = await (await fetch("h/_dates.json")).json();
-    const res = await fetch(`h/${code}.json`);
-    if (!res.ok) throw new Error(res.status);
-    const vals = await res.json();
+    const { dates, vals } = await loadHistory(code);
     const W = 420, H = 150, L = 40, R = 8, T = 8, B = 20;
     const pts = vals.map((v, i) => [i, v]).filter(([, v]) => v !== null);
     if (pts.length < 2) { el.textContent = "沒有足夠的走勢資料。"; return; }
@@ -23,8 +39,8 @@ async function stockChart(code, el) {
       [lo, (lo + hi) / 2, hi].map((v) => `<line x1="${L}" x2="${W - R}" y1="${y(v)}" y2="${y(v)}" class="grid"/>` +
         `<text x="${L - 4}" y="${y(v) + 4}" class="tick" text-anchor="end">${fmt(v)}</text>`).join("") +
       `<polyline points="${pts.map(([i, v]) => `${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(" ")}" style="stroke:${color}"/>` +
-      `<text x="${L}" y="${H - 4}" class="tick">${__dates[0]}</text>` +
-      `<text x="${W - R}" y="${H - 4}" class="tick" text-anchor="end">${__dates[n - 1]}</text></svg>` +
+      `<text x="${L}" y="${H - 4}" class="tick">${dates[0]}</text>` +
+      `<text x="${W - R}" y="${H - 4}" class="tick" text-anchor="end">${dates[n - 1]}</text></svg>` +
       `<p class="note">近一年 ${((last / first - 1) * 100).toFixed(0)}%（還原股價，含股利）</p>`;
   } catch {
     el.textContent = "沒有這檔股票的走勢資料。";
@@ -46,3 +62,9 @@ function chartToggle(code, parent) {
   parent.appendChild(btn);
   parent.appendChild(box);
 }
+
+// 出場規則與建議投入比例：data.json 的 risk（後端 apex/risk.py，數字由回測研究決定）。沒有時回傳 null。
+const riskReady = fetch(`data.json?t=${Date.now()}`)
+  .then((res) => (res.ok ? res.json() : null))
+  .then((d) => (d && d.risk ? { ...d.risk, regime: d.regime } : null))
+  .catch(() => null);

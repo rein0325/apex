@@ -16,52 +16,33 @@
 <body>
 <main>
   <nav class="nav"><a href="index.html">市場狀態</a><a href="picks.html">候選股票</a><a href="holdings.html" class="active">我的持股</a></nav>
-  <h1>我的持股</h1>
-  <p class="note privacy">🔒 資料只存在<b>這台裝置的這個瀏覽器</b>，不會上傳到任何地方。換手機或清除瀏覽器資料就會不見，請定期按「匯出 CSV」備份。</p>
   <p class="meta" id="price-date">讀取行情中…</p>
+  <p class="subtle">資料只存在這個瀏覽器，不會上傳。換手機或清除瀏覽器資料就會不見，記得到最下面「交易紀錄與備份」匯出 CSV。</p>
 
   <section class="card">
-    <h2>總覽</h2>
-    <div class="kpis">
-      <div class="kpi">總資產<b id="k-total">—</b></div>
-      <div class="kpi">股票市值<b id="k-value">—</b></div>
-      <div class="kpi">未實現損益<b id="k-unreal">—</b></div>
-      <div class="kpi">已實現損益<b id="k-real">—</b></div>
-      <div class="kpi">股票占總資產<b id="k-ratio">—</b></div>
-      <div class="kpi">目前回撤<b id="k-dd">—</b><small id="k-mdd"></small></div>
+    <p class="subtle" style="margin:0">總資產（元）</p>
+    <div class="big-num" id="k-total">—</div>
+    <div class="facts">
+      <span>未實現 <b id="k-unreal">—</b></span>
+      <span>已實現 <b id="k-real">—</b></span>
+      <span>股票市值 <b id="k-value">—</b></span>
     </div>
+    <div class="bar-labels" style="margin-top:14px"><span>從最高點回落（回撤）</span><b id="k-dd">—</b></div>
+    <div id="dd-bar"></div>
+    <div class="bar-labels"><span>0%</span><span id="dd-note">目標 −25%｜上限 −30%</span></div>
+    <div class="bar-labels" style="margin-top:12px"><span>股票占總資產</span><b id="k-ratio">—</b></div>
+    <div id="ratio-bar"></div>
+    <div class="bar-labels"><span id="ratio-note"></span></div>
     <div id="warnings"></div>
     <label class="row">帳戶現金（元）
       <input type="number" id="cash" min="0" step="1" inputmode="numeric" placeholder="0">
     </label>
   </section>
 
-  <section class="card">
-    <h2>持股明細</h2>
-    <div class="scroll">
-      <table id="holdings">
-        <thead><tr><th>股票</th><th>約當股數</th><th>收盤</th><th>市值</th><th>損益</th><th>報酬</th><th>比重</th></tr></thead>
-        <tbody></tbody>
-      </table>
-    </div>
-    <p class="note">約當股數含配股、分割與現金股利再投入，可能和券商顯示的股數不同，但總報酬一致。成本採平均成本法（含手續費）。</p>
-  </section>
-
-  <section class="card">
-    <h2>模型對我的持股的看法</h2>
-    <p class="note" id="view-note">讀取中…</p>
-    <div id="views"></div>
-    <details>
-      <summary>看法怎麼判斷？</summary>
-      <ul class="note">
-        <li><b>續抱</b>：模型分數在全市場前半段，且股價在季線（60 日平均）之上。</li>
-        <li><b>留意</b>：模型分數在後半段，或股價跌破季線。</li>
-        <li><b>考慮減碼</b>：模型分數在後 20%，而且股價跌破季線。</li>
-        <li>ETF（例如 0050）和成交量太小的股票不在模型評分範圍。</li>
-        <li>模型沒有通過歷史驗證門檻，看法只是參考；要不要買賣由你決定。</li>
-      </ul>
-    </details>
-  </section>
+  <h2 class="section-title">我的股票</h2>
+  <p class="subtle" id="view-note"></p>
+  <div id="cards"></div>
+  <div class="card" id="cards-help"></div>
 
   <section class="card">
     <h2>新增交易</h2>
@@ -86,8 +67,8 @@
     </details>
   </section>
 
-  <section class="card">
-    <h2>交易紀錄</h2>
+  <details class="card">
+    <summary><b>交易紀錄與備份</b></summary>
     <div class="scroll">
       <table id="trades">
         <thead><tr><th>日期</th><th>股票</th><th>買賣</th><th>股數</th><th>價格</th><th>費用</th><th></th></tr></thead>
@@ -101,10 +82,11 @@
       <button type="button" id="clear" class="danger">清除全部</button>
     </div>
     <p class="note">CSV 格式和電腦上的 personal/trades.csv 相同，可以互相匯入。回撤是從你開始使用這一頁那天起，每次打開時依收盤價累積計算。</p>
-  </section>
+  </details>
 
   <p class="note">本頁只做記帳與計算，不構成投資建議。</p>
 </main>
+<script src="ui.js"></script>
 <script src="chart.js"></script>
 <script src="holdings.js"></script>
 </body>
