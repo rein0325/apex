@@ -70,10 +70,23 @@ jobs:
       - run: uv run python -m apex snapshot restore "$SNAPSHOT"
       - name: 執行研究
         # 參數以空白分隔（不經過 eval），策略規格本身不含空白
+        # 紀錄要登入才看得到，所以把錯誤與摘要寫成公開的註記（annotation）；失敗時工作一定標示失敗
         run: |
           mkdir -p out
+          set +e
           # shellcheck disable=SC2086
-          uv run python -m apex research $ARGS | tee out/report.md
+          uv run python -m apex research $ARGS 2>&1 | tee out/report.md
+          code=${PIPESTATUS[0]}
+          set -e
+          enc() { python3 -c "import sys; print(sys.stdin.read().replace('%','%25').replace('','').replace('
+','%0A'))"; }
+          if grep -q '^SUMMARY|' out/report.md; then
+            echo "::notice title=研究摘要::$(grep '^SUMMARY|' out/report.md | enc)"
+          fi
+          if [ "$code" -ne 0 ]; then
+            echo "::error title=研究失敗::$(tail -n 40 out/report.md | enc)"
+            exit "$code"
+          fi
       - name: 摘要
         if: always()
         run: |
