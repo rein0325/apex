@@ -140,6 +140,11 @@ def run_research(db: Database, args: argparse.Namespace) -> int:
             if exits:
                 counts = pd.Series([r for _, _, r in exits]).value_counts()
                 print("出場規則觸發：" + "、".join(f"{k} {v} 次" for k, v in counts.items()))
+            gated = getattr(strategy, "gated", None)
+            if gated is not None:
+                inside = sorted({d for d in gated if start <= d.date() <= end})
+                print(f"把握規則：{len(inside)} 個月改持 0050" +
+                      (f"（{'、'.join(d.strftime('%Y-%m') for d in inside)}）" if inside else ""))
             m = report.metrics
             # 一行摘要，方便雲端研究彙整（.github/workflows/research.yml 會把這些行放進公開註記）
             nan = float("nan")
@@ -153,27 +158,52 @@ def run_research(db: Database, args: argparse.Namespace) -> int:
 
 
 def run_ml(db: Database, args: argparse.Namespace) -> int:
-    """滾動式檢查模型預測力：每年重新訓練，逐年列出 Rank IC 與前 10% 超額報酬。"""
+    """滾動式檢查模型預測力：每年重新訓練，逐年列出 Rank IC、前 10% 超額與前 6 名贏大盤比例。
+
+    --vote：另外列出投票分數（所有模型、所有期間的當月排名平均），以 60 日標籤評估
+    （docs/研究報告/模型改進研究.md）。
+    """
     import time
 
-    from apex.backtest import load
-    from apex.research.features import Features
-    from apex.research.ml import ML_START, build_dataset, calibration, evaluate_predictions, walk_forward
+    from apex.research.ml import (
+        ML_START,
+        calibration,
+        combine,
+        dataset_for,
+        evaluate_predictions,
+        walk_forward,
+    )
     from apex.research.periods import period_range
 
     last_day = db.con.execute("SELECT max(date) FROM daily_quotes").fetchone()[0]
-    _, end = period_range(args.period, last_day, args.unlock_holdout)
-    for horizon in args.horizon or [60]:
+    start, end = period_range(args.period, last_day, args.unlock_holdout)
+    cache: dict = {}
+    preds = []
+    eval_y = None
+
+    def show(name: str, pred, y) -> None:
+        ev = evaluate_predictions(pred, y)
+        print("年份    Rank IC  IC>0 月份  前10%超額  前6名贏大盤  全部贏大盤  月數")
+        for idx, r in ev.iterrows():
+            print(f"{idx:<6} {r['ic']:+8.3f}  {r['ic_pos']:8.0%}  {r['spread']:+9.2%}  {r['hit']:10.1%}  "
+                  f"{r['base']:9.1%}  {int(r['months']):4d}")
+        t = ev.loc["全期"]
+        print(f"SUMMARY|ml|{name}|{args.features}|{start}~{end}|IC {t['ic']:+.3f}|IC>0 {t['ic_pos']:.0%}|"
+              f"前10%超額 {t['spread']:+.2%}|前6名贏大盤 {t['hit']:.1%}|全部 {t['base']:.1%}", flush=True)
+
+    horizons = args.horizon or [60]
+    for horizon in horizons:
         t0 = time.time()
-        ds = build_dataset(Features(load(db, ML_START, end)), horizon)
-        print(f"\n資料集 {ML_START}～{end}｜{horizon} 日｜樣本 {len(ds.X):,}｜特徵 {ds.X.shape[1]}｜"
-              f"建立 {time.time() - t0:.0f} 秒")
-        start, _ = period_range(args.period, last_day, args.unlock_holdout)
+        ds = dataset_for(db, end, horizon, cache, args.features)
+        if horizon == 60 or eval_y is None:
+            eval_y = ds.y
+        print(f"\n資料集 {ML_START}～{end}｜{horizon} 日｜特徵組 {args.features}｜樣本 {len(ds.X):,}｜"
+              f"特徵 {ds.X.shape[1]}｜建立 {time.time() - t0:.0f} 秒")
         dates = ds.X.index.get_level_values("date")
         years = [y for y in sorted(set(dates.year)) if y >= max(ML_START.year + 2, start.year)]
         for model in args.model or ["ridge", "lgbm", "xgb"]:
             pred, folds = walk_forward(ds, model, years, target=args.target)
-            ev = evaluate_predictions(pred, ds.y)
+            preds.append(pred)
             secs = sum(f.seconds for f in folds)
             print(f"\n模型 {model}｜{horizon} 日｜目標 {args.target}｜訓練 {len(folds)} 次共 {secs:.0f} 秒")
             if args.target == "up":
@@ -181,10 +211,12 @@ def run_ml(db: Database, args: argparse.Namespace) -> int:
                 print("機率校準（樣本外）：")
                 print(cal.to_string(formatters={"預測機率": "{:.0%}".format, "實際上漲比例": "{:.0%}".format,
                                                 "平均報酬": "{:+.2%}".format}))
-            print("年份    Rank IC  IC>0 月份  前10%超額  月數")
-            for idx, r in ev.iterrows():
-                print(f"{idx:<6} {r['ic']:+8.3f}  {r['ic_pos']:8.0%}  {r['spread']:+9.2%}  "
-                      f"{int(r['months']):4d}")
+            show(f"{model}:{horizon}", pred, ds.y)
+    if args.vote and len(preds) > 1:
+        models = "/".join(args.model or ["ridge", "lgbm", "xgb"])
+        hs = "/".join(str(h) for h in horizons)
+        print(f"\n投票 {models}｜{hs} 日（以 60 日結果評估）")
+        show(f"vote:{models}:{hs}", combine(preds), eval_y)
     return 0
 
 
@@ -334,6 +366,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--model", action="append", choices=["ridge", "lgbm", "xgb"])
     p.add_argument("--horizon", action="append", type=int, choices=[20, 60, 120])
     p.add_argument("--target", default="rank", choices=["rank", "up"], help="rank：超額排名；up：上漲機率")
+    p.add_argument("--features", default="v1", choices=["v1", "v2"], help="v1：原本的特徵；v2：加估值")
+    p.add_argument("--vote", action="store_true", help="另外評估所有模型、期間的投票分數")
     p.add_argument("--unlock-holdout", action="store_true")
 
     p = sub.add_parser("portfolio", help="持股報告：損益、回撤、風險提醒（只讀本機交易紀錄）")

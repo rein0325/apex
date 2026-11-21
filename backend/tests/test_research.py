@@ -107,6 +107,22 @@ def test_financial_frame():
     assert last["debt_ratio"] == pytest.approx(0.25)
     assert last["shares"] == 100
     assert np.isnan(out.loc[dt.date(2023, 3, 28), "eps_yoy"])  # 沒有去年同季
+    assert last["eps_ttm"] == pytest.approx(4.5)  # 1＋1＋1＋1.5
+    assert np.isnan(out.loc[dt.date(2023, 3, 28), "eps_ttm"])  # 不足 4 季
+    assert last["bvps"] == pytest.approx(120 / 100)  # 沒有每股淨值時用權益 ÷ 估計股數
+
+
+def test_payout_panel_counts_one_year_from_ex_date():
+    from apex.research.features import YEAR_DAYS, payout_panel
+    days = pd.bdate_range("2023-01-02", periods=YEAR_DAYS + 20)
+    actions = pd.DataFrame({"code": ["A", "A"], "eff_date": [days[5], days[10]],
+                            "prev_close": [100.0, 50.0], "ref_price": [95.0, 49.0]})
+    out = payout_panel(actions, days, pd.Index(["A", "B"]))
+    assert out.loc[days[4], "A"] == 0  # 除息日前還沒計入
+    assert out.loc[days[5], "A"] == pytest.approx(0.05)
+    assert out.loc[days[10], "A"] == pytest.approx(0.07)
+    assert out.loc[days[5 + YEAR_DAYS], "A"] == pytest.approx(0.02)  # 一年後第一筆移出
+    assert (out["B"] == 0).all()
 
 
 def test_classify_regimes():

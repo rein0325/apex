@@ -225,21 +225,33 @@ _ML_DATA: dict = {}
 
 @register("ML", "ML")
 def ml_rank(arg: str, f: Features) -> Strategy:
-    """ML:模型:期間:檔數:緩衝[:市值前K大]，例如 ML:lgbm:60:15:3、ML:ridge:60:15:3:150。
+    """ML:模型:期間:檔數:緩衝[:市值前K大[:特徵組[:ic]]]，例如 ML:lgbm:60:15:3、ML:ridge:60:15:3:150。
 
     分數由滾動式訓練產生（每年重新訓練）；第 5 個參數限定只從市值前 K 大的股票中挑選。
+    docs/研究報告/模型改進研究.md：
+    - 模型、期間可用 / 串接表示投票，例如 ML:lgbm/xgb/ridge:20/60/120:6:3::v2。
+    - 特徵組 v1（原本）或 v2（加估值）；第 8 個參數 ic ＝ 把握規則（最近 12 個月 IC ≤ 0 就改持 0050）。
     """
-    from apex.research.ml import MLStrategy, scores_for
-    parts = arg.split(":")
-    model = parts[0] if parts and parts[0] else "lgbm"
-    horizon = int(parts[1]) if len(parts) > 1 and parts[1] else 60
+    from apex.research.ml import FEATURE_SETS, MLStrategy, dataset_for, trailing_ic, vote_scores
+    parts = arg.split(":") + [""] * 8
+    models = [m for m in parts[0].split("/") if m] or ["lgbm"]
+    horizons = [int(h) for h in parts[1].split("/") if h] or [60]
     n, buffer = _params(":".join(parts[2:4]), default_n=15, default_buffer=3.0)
-    top_k = int(parts[4]) if len(parts) > 4 and parts[4] else None
+    top_k = int(parts[4]) if parts[4] else None
+    features = parts[5] or "v1"
+    if features not in FEATURE_SETS:
+        raise ValueError(f"未知特徵組 {features}，可用：{', '.join(FEATURE_SETS)}")
+    if parts[6] not in ("", "ic"):
+        raise ValueError(f"第 8 個參數只能是 ic（把握規則），收到 {parts[6]}")
     end = f.days[-1].date()
-    key = (model, horizon, end)
+    key = (tuple(models), tuple(horizons), features, end)
     if key not in _ML_SCORES:
-        _ML_SCORES[key] = scores_for(f.db, end, model, horizon, cache=_ML_DATA)
-    return MLStrategy(_ML_SCORES[key], n, buffer, f["mcap"] if top_k else None, top_k)
+        _ML_SCORES[key] = vote_scores(f.db, end, models, horizons, cache=_ML_DATA, features=features)
+    scores = _ML_SCORES[key]
+    gate = None
+    if parts[6] == "ic":
+        gate = trailing_ic(scores, dataset_for(f.db, end, 60, _ML_DATA, features).y)
+    return MLStrategy(scores, n, buffer, f["mcap"] if top_k else None, top_k, gate=gate)
 
 
 @register("MLP", "ML")

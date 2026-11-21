@@ -3,7 +3,15 @@ import pandas as pd
 import pytest
 
 from apex.research.features import Features
-from apex.research.ml import MARKET_FEATURES, MLStrategy, build_dataset, evaluate_predictions, walk_forward
+from apex.research.ml import (
+    MARKET_FEATURES,
+    MLStrategy,
+    build_dataset,
+    combine,
+    evaluate_predictions,
+    trailing_ic,
+    walk_forward,
+)
 from tests.test_research import _random_data, _truncate
 
 FEATS = ["ret_20", "ma_gap_60", "vol_20"]
@@ -109,3 +117,61 @@ def test_up_target_and_cash_when_few_qualify():
     class Ctx:
         date = d
     assert s(Ctx()) == {"A": 0.25, "B": 0.25}  # 只有 2 檔達標，其餘 50% 放現金
+
+
+def _ctx(d):
+    class Ctx:
+        date = d
+    return Ctx()
+
+
+def test_combine_averages_monthly_ranks():
+    d = pd.Timestamp("2024-01-31")
+    idx = pd.MultiIndex.from_product([[d], list("ABC")], names=["date", "code"])
+    a = pd.Series([3.0, 2.0, 1.0], index=idx)          # A 最好
+    b = pd.Series([0.1, 0.9, 0.5], index=idx)          # B 最好；尺度不同也只看排名
+    v = combine([a, b])
+    assert v[(d, "A")] == pytest.approx((1 + 1 / 3) / 2)
+    assert v[(d, "B")] == pytest.approx((2 / 3 + 1) / 2)
+    assert combine([a]).equals(a)
+
+
+def test_evaluate_reports_top_n_hit_rate():
+    d = pd.Timestamp("2024-01-31")
+    codes = [f"C{i}" for i in range(20)]
+    idx = pd.MultiIndex.from_product([[d], codes], names=["date", "code"])
+    score = pd.Series(range(20, 0, -1), index=idx, dtype=float)  # C0 最高
+    excess = [0.1, 0.1, 0.1, -0.1, 0.1, -0.1] + [-0.05] * 14
+    y = pd.DataFrame({"excess": excess}, index=idx)
+    ev = evaluate_predictions(score, y, top_n=6)
+    assert ev.loc["全期", "hit"] == pytest.approx(4 / 6)
+    assert ev.loc["全期", "base"] == pytest.approx(4 / 20)
+
+
+def test_trailing_ic_only_uses_realized_months():
+    dates = pd.date_range("2020-01-31", periods=10, freq="ME")
+    codes = [f"C{i}" for i in range(12)]
+    idx = pd.MultiIndex.from_product([dates, codes], names=["date", "code"])
+    score = pd.Series(np.tile(np.arange(12, dtype=float), 10), index=idx)
+    # 前 5 個月分數和結果完全同向（IC=1），之後完全反向（IC=-1）
+    sign = np.repeat([1.0] * 5 + [-1.0] * 5, 12)
+    excess = pd.Series(np.tile(np.arange(12, dtype=float), 10) * sign, index=idx)
+    # 每個月的結果 2 個月後才揭曉
+    end = pd.Series(np.repeat(dates.shift(2, freq="ME"), 12), index=idx)
+    y = pd.DataFrame({"excess": excess, "label_end": end})
+    g = trailing_ic(score, y, window=3, min_months=2)
+    assert np.isnan(g[dates[3]])            # 只有 1 月已揭曉（3 月底揭曉，不早於 4 月底訊號日的才算）
+    assert g[dates[4]] == pytest.approx(1)  # 1、2 月已揭曉
+    assert g[dates[7]] == pytest.approx(1)  # 最近 3 個：3、4、5 月（6 月要到 8 月底才揭曉）
+    assert g[dates[9]] == pytest.approx(-1 / 3)  # 5、6、7 月
+
+
+def test_ml_strategy_gate_switches_to_0050():
+    d1, d2 = pd.Timestamp("2024-01-31"), pd.Timestamp("2024-02-29")
+    idx = pd.MultiIndex.from_product([[d1, d2], list("AB")], names=["date", "code"])
+    scores = pd.Series([2.0, 1.0, 2.0, 1.0], index=idx)
+    gate = pd.Series({d1: -0.02, d2: float("nan")})
+    s = MLStrategy(scores, n=1, buffer=1, gate=gate)
+    assert s(_ctx(d1)) == {"0050": 1.0}
+    assert s.gated == [d1]
+    assert s(_ctx(d2)) == {"A": 1.0}  # 歷史不足時照常選股

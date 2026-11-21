@@ -1,7 +1,7 @@
 name: 策略研究
 
 # 在雲端用真實資料庫跑回測研究（本機的 Windows「智慧型應用程式控制」會擋 DuckDB）。
-# runs 是 JSON 陣列，每個元素是一組 `apex research` 參數，各自平行執行；結果放在執行摘要與附件。
+# runs 是 JSON 陣列，每個元素是一組 `apex research` 參數（以 ml 開頭則是 `apex ml` 參數），各自平行執行；結果放在執行摘要與附件。
 # 觸發方式：手動執行並填 runs；或在 main 以外的分支修改 .github/research-runs.json 後推送
 # （新的工作流程還沒進 main 前無法手動執行，所以保留這個方式）。
 # 研究結果不寫回資料庫快取（試驗紀錄只留在這次執行的附件裡）。
@@ -74,8 +74,10 @@ jobs:
         run: |
           mkdir -p out
           set +e
+          # 以 ml 開頭時執行 `apex ml`（預測力檢查），否則執行 `apex research`
+          case "$ARGS" in ml\ *) CMD="ml"; REST="${ARGS#ml }" ;; *) CMD="research"; REST="$ARGS" ;; esac
           # shellcheck disable=SC2086
-          uv run python -m apex research $ARGS 2>&1 | tee out/report.md
+          uv run python -m apex $CMD $REST 2>&1 | tee out/report.md
           code=${PIPESTATUS[0]}
           set -e
           enc() { awk 'BEGIN { ORS = "%0A" } { gsub(/%/, "%25"); gsub(/[[:cntrl:]]/, ""); print }'; }

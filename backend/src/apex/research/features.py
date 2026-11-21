@@ -89,6 +89,7 @@ def financial_frame(fin: pd.DataFrame) -> pd.DataFrame:
     - gross_margin、op_margin 與年增變化 gm_chg、om_chg（百分點）
     - roe_ttm：近 4 季歸屬母公司淨利 ÷ 期末歸屬母公司權益
     - debt_ratio：負債 ÷ 資產；shares：股本 ÷ 10（估計股數，面額非 10 元者會有誤差）
+    - eps_ttm：近 4 季 EPS 合計；bvps：每股淨值（沒有時用歸屬母公司權益 ÷ 估計股數）
     """
     f = fin.copy()
     f["q"] = (f["year"] * 4 + f["quarter"] - 1).astype(int)
@@ -113,10 +114,32 @@ def financial_frame(fin: pd.DataFrame) -> pd.DataFrame:
     ttm = g["_net"] + lag("_net", 1) + lag("_net", 2) + lag("_net", 3)
     equity = g["equity_parent"].fillna(g["equity"])
     g["roe_ttm"] = (ttm / equity).where(equity > 0)
+    g["eps_ttm"] = g["eps"] + lag("eps", 1) + lag("eps", 2) + lag("eps", 3)
+    bvps = g["bvps"] if "bvps" in g else pd.Series(np.nan, index=g.index)
+    g["bvps"] = bvps.fillna((equity / g["shares"]).where(g["shares"] > 0))
     cols = ["available_date", "eps", "eps_yoy", "gross_margin", "op_margin", "gm_chg", "om_chg", "roe_ttm",
-            "debt_ratio", "shares"]
+            "debt_ratio", "shares", "eps_ttm", "bvps"]
     out = g[cols].reset_index()
     return out.sort_values(["available_date", "q"]).drop(columns="q")
+
+
+def payout_panel(actions: pd.DataFrame, days: pd.DatetimeIndex, cols: pd.Index) -> pd.DataFrame:
+    """除權息（code、eff_date、prev_close、ref_price）→ 近 12 個月的配發率面板。
+
+    每次除權息的配發率＝(除權息前收盤 − 參考價) ÷ 除權息前收盤（現金股利與股票股利都算）；
+    從除權息生效日起計入，一年（YEAR_DAYS 個交易日）後移出。除權息日前就已公告，沒有偷看未來。
+    """
+    out = pd.DataFrame(0.0, index=days, columns=cols)
+    if not actions.empty:
+        a = actions[(actions["prev_close"] > 0) & actions["ref_price"].notna()]
+        rate = (1 - a["ref_price"] / a["prev_close"]).clip(lower=0, upper=1)
+        pos = days.searchsorted(pd.to_datetime(a["eff_date"]).values)
+        ok = pos < len(days)
+        ev = pd.DataFrame({"_day": days[pos[ok]], "code": a["code"].to_numpy()[ok],
+                           "rate": rate.to_numpy()[ok]})
+        p = ev.pivot_table(index="_day", columns="code", values="rate", aggfunc="sum")
+        out = out.add(p.reindex(index=days, columns=cols).fillna(0.0), fill_value=0.0)
+    return out.rolling(YEAR_DAYS, min_periods=1).sum()
 
 
 # ── 特徵庫 ─────────────────────────────────────────────────────────────
@@ -161,7 +184,7 @@ class Features:
                 "ind_ret_{n}", "ind_rel_{n}", "foreign_{n}", "trust_{n}", "dealer_{n}", "margin_chg_{n}",
                 "short_ratio", "rev_yoy", "rev_yoy_3m", "rev_yoy_12m", "rev_accel", "rev_up_streak",
                 "eps", "eps_yoy", "gross_margin", "op_margin", "gm_chg", "om_chg", "roe_ttm", "debt_ratio",
-                "shares", "mcap", "industry_code"]
+                "shares", "mcap", "industry_code", "ey", "bp", "dy"]
 
     # 價量 ---------------------------------------------------------------
     @property
@@ -323,6 +346,32 @@ class Features:
         cols = self.data["close"].columns
         return {k: v.reindex(columns=cols) for k, v in to_days(frame, self.days).items()}
 
+    @property
+    def raw_close(self) -> pd.DataFrame:
+        """未還原收盤價（停止買賣沿用最後價格）：和每股盈餘、淨值比較時用。"""
+        if "_rclose" not in self._cache:
+            self._cache["_rclose"] = self.data["close"].ffill()
+        return self._cache["_rclose"]
+
+    def _ey(self) -> pd.DataFrame:
+        """盈餘殖利率：近 4 季 EPS ÷ 股價（本益比的倒數；虧損為負值，仍可排序）。"""
+        px = self.raw_close
+        return (self["eps_ttm"] / px).where(px > 0)
+
+    def _bp(self) -> pd.DataFrame:
+        """淨值股價比：每股淨值 ÷ 股價（股價淨值比的倒數）。"""
+        px = self.raw_close
+        return (self["bvps"] / px).where(px > 0)
+
+    def _dy(self) -> pd.DataFrame:
+        """近 12 個月配發率（現金加股票股利，以除權息前股價計）；上市未滿一年或沒有配發為 0。"""
+        actions = self.db.con.execute("""
+            SELECT code, eff_date, prev_close, ref_price FROM corporate_actions_eff
+            WHERE kind = 'dividend' AND eff_date IS NOT NULL
+        """).df()
+        cols = self.data["close"].columns
+        return payout_panel(actions, self.days, cols).where(self.data["close"].ffill().notna())
+
     def _mcap(self) -> pd.DataFrame:
         """估計市值：股數（股本 ÷ 10）× 未還原收盤價。"""
         return self["shares"] * self.data["close"].ffill()
@@ -349,6 +398,10 @@ class Features:
         (r"margin_chg_(\d+)", _margin_chg),
         (r"short_ratio", _short_ratio),
         (r"rev_yoy|rev_yoy_3m|rev_yoy_12m|rev_accel|rev_up_streak", _revenue),
-        (r"eps|eps_yoy|gross_margin|op_margin|gm_chg|om_chg|roe_ttm|debt_ratio|shares", _financials),
+        (r"eps|eps_yoy|gross_margin|op_margin|gm_chg|om_chg|roe_ttm|debt_ratio|shares|eps_ttm|bvps",
+         _financials),
+        (r"ey", _ey),
+        (r"bp", _bp),
+        (r"dy", _dy),
         (r"mcap", _mcap),
     ]

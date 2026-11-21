@@ -42,6 +42,9 @@ STOCK_FEATURES = [
 MARKET_FEATURES = ["mkt_ma_gap", "mkt_ma_slope", "mkt_vol_pct", "mkt_breadth"]
 FEATURES = STOCK_FEATURES + MARKET_FEATURES
 HORIZONS = (20, 60, 120)
+# 估值特徵（docs/研究報告/模型改進研究.md ①）：v2 ＝ 原本的特徵＋估值
+VALUATION_FEATURES = ["ey", "bp", "dy"]
+FEATURE_SETS = {"v1": STOCK_FEATURES, "v2": STOCK_FEATURES + VALUATION_FEATURES}
 
 
 @dataclass
@@ -243,9 +246,10 @@ def walk_forward(ds: Dataset, model: str, test_years: list[int], seed: int = 0,
 
 
 def evaluate_predictions(pred: pd.Series, y: pd.DataFrame, top: float = 0.1,
-                         min_names: int = 20) -> pd.DataFrame:
+                         min_names: int = 20, top_n: int = 6) -> pd.DataFrame:
     """逐年：Rank IC（分數與實際超額報酬的 Spearman 相關）平均、IC 為正的月份比例、
-    前 top 比例股票的平均超額報酬減全體平均（單期 h 日，不年化）。"""
+    前 top 比例股票的平均超額報酬減全體平均（單期 h 日，不年化）、
+    hit：分數前 top_n 名中超額報酬 > 0（贏加權報酬指數）的比例；base：全部股票贏指數的比例。"""
     df = pd.DataFrame({"score": pred}).join(y[["excess"]]).dropna()
     rows = []
     for d, g in df.groupby(level="date"):
@@ -254,16 +258,47 @@ def evaluate_predictions(pred: pd.Series, y: pd.DataFrame, top: float = 0.1,
         ic = g["score"].rank().corr(g["excess"].rank())
         k = max(1, int(len(g) * top))
         spread = g.nlargest(k, "score")["excess"].mean() - g["excess"].mean()
-        rows.append((d, ic, spread))
-    per = pd.DataFrame(rows, columns=["date", "ic", "spread"]).set_index("date")
+        hit = (g.nlargest(top_n, "score")["excess"] > 0).mean()
+        rows.append((d, ic, spread, hit, (g["excess"] > 0).mean()))
+    per = pd.DataFrame(rows, columns=["date", "ic", "spread", "hit", "base"]).set_index("date")
     if per.empty:
         return per
     out = per.groupby(per.index.year).agg(ic=("ic", "mean"), ic_pos=("ic", lambda s: (s > 0).mean()),
-                                          spread=("spread", "mean"), months=("ic", "size"))
+                                          spread=("spread", "mean"), hit=("hit", "mean"),
+                                          base=("base", "mean"), months=("ic", "size"))
     total = pd.DataFrame({"ic": [per["ic"].mean()], "ic_pos": [(per["ic"] > 0).mean()],
-                          "spread": [per["spread"].mean()], "months": [len(per)]}, index=["全期"])
+                          "spread": [per["spread"].mean()], "hit": [per["hit"].mean()],
+                          "base": [per["base"].mean()], "months": [len(per)]}, index=["全期"])
     out.index = out.index.astype(str)
     return pd.concat([out, total])
+
+
+def combine(preds: list[pd.Series]) -> pd.Series:
+    """投票：每組分數先轉成當月的百分位排名，再平均（某組缺值時用其餘的平均）。"""
+    if len(preds) == 1:
+        return preds[0]
+    ranks = [p.groupby(level="date").rank(pct=True) for p in preds]
+    return pd.concat(ranks, axis=1).mean(axis=1).rename("score")
+
+
+def trailing_ic(score: pd.Series, y: pd.DataFrame, window: int = 12, min_months: int = 6) -> pd.Series:
+    """每個訊號日：過去 window 個「結果已揭曉」月份的平均 Rank IC（docs/研究報告/模型改進研究.md ④）。
+
+    只用 label_end 早於訊號日的月份（當時已經知道結果）；不足 min_months 個月時為 NaN。
+    """
+    df = pd.DataFrame({"score": score}).join(y[["excess", "label_end"]]).dropna(subset=["score"])
+    per, ends = {}, {}
+    for d, g in df.groupby(level="date"):
+        g = g.dropna(subset=["excess"])
+        if len(g) >= 10:
+            per[d] = g["score"].rank().corr(g["excess"].rank())
+            ends[d] = g["label_end"].max()
+    per_s, ends_s = pd.Series(per, dtype=float), pd.Series(ends, dtype="datetime64[ns]")
+    out = {}
+    for d in sorted(set(score.index.get_level_values("date"))):
+        known = per_s[(ends_s < d).to_numpy()].tail(window)
+        out[d] = float(known.mean()) if len(known) >= min_months else float("nan")
+    return pd.Series(out, dtype=float)
 
 
 def calibration(prob: pd.Series, y: pd.DataFrame, bins: tuple[float, ...] = (0, .3, .4, .5, .6, .7, 1)
@@ -285,10 +320,13 @@ class MLStrategy:
     top_k 不為 None 時，只從訊號日市值前 top_k 大的股票中挑選（模型訓練仍用全部可投資股票）。
     min_score 不為 None 時（上漲機率模型），只買分數 ≥ min_score 的股票，每檔固定 1/n，其餘保留現金；
     符合的股票少，持股就少，可以完全空手。
+    gate 不為 None 時（把握規則）：訊號日的 gate 值 ≤ 0（模型最近不準）就全部改持 fallback（預設 0050）；
+    gate 為 NaN（歷史不足）時照常選股。
     """
 
     def __init__(self, scores: pd.Series, n: int = 15, buffer: float = 3.0, mcap: pd.DataFrame | None = None,
-                 top_k: int | None = None, min_score: float | None = None):
+                 top_k: int | None = None, min_score: float | None = None, gate: pd.Series | None = None,
+                 fallback: str = "0050"):
         from apex.research.strategies import pick
         self._pick = pick
         self.scores = scores
@@ -296,12 +334,18 @@ class MLStrategy:
         self.n, self.buffer = n, buffer
         self.mcap, self.top_k = mcap, top_k
         self.min_score = min_score
+        self.gate, self.fallback = gate, fallback
         self.held: list[str] = []
+        self.gated: list[pd.Timestamp] = []  # 因為把握規則改持 0050 的訊號日
 
     def __call__(self, ctx: Context) -> dict[str, float]:
         s = self.by_date.get(ctx.date)
         if s is None:
             return {}
+        if self.gate is not None and self.gate.get(ctx.date, float("nan")) <= 0:
+            self.held = []
+            self.gated.append(ctx.date)
+            return {self.fallback: 1.0}
         if self.top_k:
             big = self.mcap.loc[ctx.date].reindex(s.index).nlargest(self.top_k).index
             s = s[s.index.isin(big)]
@@ -316,21 +360,39 @@ class MLStrategy:
 ML_START = dt.date(2016, 1, 4)  # 訓練資料起點（研究期第一天；之前為特徵暖機）
 
 
-def scores_for(db, end: dt.date, model: str, horizon: int, cache: dict | None = None,
-               target: str = "rank") -> pd.Series:
-    """從 ML_START 到 end 建資料集，對 ML_START+2 年起每一年做滾動式預測，回傳全部分數。
-
-    end 必須已通過期間檢查（保留期鎖定由呼叫端負責）。cache 以 (end, horizon) 存資料集。
-    """
+def dataset_for(db, end: dt.date, horizon: int, cache: dict | None = None, features: str = "v1") -> Dataset:
+    """ML_START～end 的資料集；cache 以 (end, horizon, features) 存資料集，特徵庫以 end 共用。"""
     from apex.backtest import load
-    key = (end, horizon)
+    key = (end, horizon, features)
     if cache is not None and key in cache:
-        ds = cache[key]
+        return cache[key]
+    fkey = ("_features", end)
+    if cache is not None and fkey in cache:
+        f = cache[fkey]
     else:
         data: MarketData = load(db, ML_START, end)
-        ds = build_dataset(Features(data), horizon)
+        f = Features(data)
         if cache is not None:
-            cache[key] = ds
+            cache[fkey] = f
+    ds = build_dataset(f, horizon, stock_features=FEATURE_SETS[features])
+    if cache is not None:
+        cache[key] = ds
+    return ds
+
+
+def scores_for(db, end: dt.date, model: str, horizon: int, cache: dict | None = None,
+               target: str = "rank", features: str = "v1") -> pd.Series:
+    """從 ML_START 到 end 建資料集，對 ML_START+2 年起每一年做滾動式預測，回傳全部分數。
+
+    end 必須已通過期間檢查（保留期鎖定由呼叫端負責）。
+    """
+    ds = dataset_for(db, end, horizon, cache, features)
     years = sorted(set(ds.X.index.get_level_values("date").year))
     pred, _ = walk_forward(ds, model, [y for y in years if y >= ML_START.year + 2], target=target)
     return pred
+
+
+def vote_scores(db, end: dt.date, models: list[str], horizons: list[int], cache: dict | None = None,
+                features: str = "v1") -> pd.Series:
+    """多個模型、多個預測期間的投票分數（各自滾動式預測後，用 combine 平均當月排名）。"""
+    return combine([scores_for(db, end, m, h, cache, features=features) for h in horizons for m in models])
