@@ -153,6 +153,9 @@ def run_research(db: Database, args: argparse.Namespace) -> int:
                      f"回撤 {m.get('max_drawdown', nan):+.1%}", f"Calmar {m.get('calmar', nan):.2f}",
                      f"換手 {m.get('turnover', nan):.1f}", f"出場 {len(exits or [])}",
                      "通過" if report.passed else "未過"]
+            failed = [f"{k}（{d}）" for k, (ok, d) in report.checks.items() if ok is False]
+            if failed:
+                cells.append("未過項目：" + "；".join(failed))
             print("SUMMARY|" + "|".join(cells), flush=True)
     return 0
 
