@@ -110,6 +110,11 @@ TWSE_INSTI_OLD = [
     "三大法人買賣超股數",
 ]
 
+TWSE_INSTI_OLDEST = [
+    "證券代號", "證券名稱", "外資買進股數", "外資賣出股數", "外資買賣超股數", "投信買進股數", "投信賣出股數",
+    "投信買賣超股數", "自營商買賣超股數", "自營商買進股數", "自營商賣出股數", "三大法人買賣超股數",
+]
+
 
 def parse_twse_insti(text: str, date: dt.date) -> list[Insti]:
     data = _load(text, "證交所三大法人")
@@ -129,6 +134,11 @@ def parse_twse_insti(text: str, date: dt.date) -> list[Insti]:
             v = [to_int(x) for x in r]
             out.append(Insti(date, "TWSE", code, v[2], v[3], v[4], None, v[5], v[6], v[7], v[8], v[11], v[14],
                              v[15]))
+    elif fields == TWSE_INSTI_OLDEST:  # 自營商沒有分自行買賣、避險
+        for code, r in _rows(data.get("data") or [], date):
+            v = [to_int(x) for x in r]
+            out.append(Insti(date, "TWSE", code, v[2], v[3], v[4], None, v[5], v[6], v[7], v[8], None, None,
+                             v[11]))
     else:
         raise ParseError(f"證交所三大法人欄位不符：{fields}")
     return out

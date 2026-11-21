@@ -116,12 +116,12 @@ def run_research(db: Database, args: argparse.Namespace) -> int:
     last_day = db.con.execute("SELECT max(date) FROM daily_quotes").fetchone()[0]
     if args.start:
         start, end = args.start, args.end or last_day
-        check_range(start, end, args.unlock_holdout)
+        check_range(start, end, args.unlock_holdout, args.unlock_early)
         # 落在單一期間內的自訂起訖仍歸入該期間（例如 ML 從 2018 才有預測），試驗次數才算得對
         period = next((name for name, (s, e) in PERIODS.items()
                        if s <= start and end <= (e or last_day)), "custom")
     else:
-        start, end = period_range(args.period, last_day, args.unlock_holdout)
+        start, end = period_range(args.period, last_day, args.unlock_holdout, args.unlock_early)
         period = args.period
     freqs = args.freq or ["M"]
     costs = CostModel(commission_discount=args.discount, min_commission=args.min_fee,
@@ -153,6 +153,9 @@ def run_research(db: Database, args: argparse.Namespace) -> int:
                      f"回撤 {m.get('max_drawdown', nan):+.1%}", f"Calmar {m.get('calmar', nan):.2f}",
                      f"換手 {m.get('turnover', nan):.1f}", f"出場 {len(exits or [])}",
                      "通過" if report.passed else "未過"]
+            if exits:
+                counts = pd.Series([r for _, _, r in exits]).value_counts()
+                cells.append("出場：" + "、".join(f"{k}{v}" for k, v in counts.items()))
             failed = [f"{k}（{d}）" for k, (ok, d) in report.checks.items() if ok is False]
             if failed:
                 cells.append("未過項目：" + "；".join(failed))
@@ -173,18 +176,31 @@ def run_ml(db: Database, args: argparse.Namespace) -> int:
         calibration,
         combine,
         dataset_for,
+        evaluate_big,
         evaluate_predictions,
         walk_forward,
     )
     from apex.research.periods import period_range
 
     last_day = db.con.execute("SELECT max(date) FROM daily_quotes").fetchone()[0]
-    start, end = period_range(args.period, last_day, args.unlock_holdout)
+    start, end = period_range(args.period, last_day, args.unlock_holdout, args.unlock_early)
     cache: dict = {}
     preds = []
     eval_y = None
 
     def show(name: str, pred, y) -> None:
+        if args.target == "big":
+            ev = evaluate_big(pred, y)
+            print("年份    前6名大漲  全部大漲  倍數   前6名期末  全部期末  前6名大跌  月數")
+            for idx, r in ev.iterrows():
+                print(f"{idx:<6} {r['hit']:9.1%}  {r['base']:8.1%}  {r['lift']:4.2f}  {r['top_ret']:+9.2%}  "
+                      f"{r['all_ret']:+8.2%}  {r['top_low']:9.1%}  {int(r['months']):4d}")
+            t = ev.loc["全期"]
+            print(f"SUMMARY|big|{name}|{args.features}|{start}~{end}|"
+                  f"前6名大漲 {t['hit']:.1%}|全部 {t['base']:.1%}|"
+                  f"倍數 {t['lift']:.2f}|前6名期末 {t['top_ret']:+.2%}|全部期末 {t['all_ret']:+.2%}|"
+                  f"前6名大跌 {t['top_low']:.1%}", flush=True)
+            return
         ev = evaluate_predictions(pred, y)
         print("年份    Rank IC  IC>0 月份  前10%超額  前6名贏大盤  全部贏大盤  月數")
         for idx, r in ev.iterrows():
@@ -197,6 +213,9 @@ def run_ml(db: Database, args: argparse.Namespace) -> int:
     horizons = args.horizon or [60]
     for horizon in horizons:
         t0 = time.time()
+        if args.period == "early":
+            run_ml_early(db, args, horizon, start, end, cache, preds, show)
+            continue
         ds = dataset_for(db, end, horizon, cache, args.features)
         if horizon == 60 or eval_y is None:
             eval_y = ds.y
@@ -205,22 +224,50 @@ def run_ml(db: Database, args: argparse.Namespace) -> int:
         dates = ds.X.index.get_level_values("date")
         years = [y for y in sorted(set(dates.year)) if y >= max(ML_START.year + 2, start.year)]
         for model in args.model or ["ridge", "lgbm", "xgb"]:
-            pred, folds = walk_forward(ds, model, years, target=args.target)
+            pred, folds = walk_forward(ds, model, years, target=args.target, shuffle=args.placebo)
             preds.append(pred)
             secs = sum(f.seconds for f in folds)
             print(f"\n模型 {model}｜{horizon} 日｜目標 {args.target}｜訓練 {len(folds)} 次共 {secs:.0f} 秒")
+            if model == (args.model or ["ridge"])[0] and args.target == "big":
+                # 對照：不用模型，只挑波動最大、或近 60 日漲最多的 6 檔
+                show(f"對照-波動最大:{horizon}", ds.X["vol_60"], ds.y)
+                show(f"對照-近60日強勢:{horizon}", ds.X["ret_60"], ds.y)
             if args.target == "up":
                 cal = calibration(pred, ds.y)
                 print("機率校準（樣本外）：")
                 print(cal.to_string(formatters={"預測機率": "{:.0%}".format, "實際上漲比例": "{:.0%}".format,
                                                 "平均報酬": "{:+.2%}".format}))
-            show(f"{model}:{horizon}", pred, ds.y)
+            show(f"{'安慰劑-' if args.placebo else ''}{model}:{horizon}", pred, ds.y)
+    if args.period == "early":
+        eval_y = cache["_early_eval_y"]
     if args.vote and len(preds) > 1:
         models = "/".join(args.model or ["ridge", "lgbm", "xgb"])
         hs = "/".join(str(h) for h in horizons)
         print(f"\n投票 {models}｜{hs} 日（以 60 日結果評估）")
-        show(f"vote:{models}:{hs}", combine(preds), eval_y)
+        show(f"{'安慰劑-' if args.placebo else ''}vote:{models}:{hs}", combine(preds), eval_y)
     return 0
+
+
+def run_ml_early(db, args, horizon, start, end, cache, preds, show) -> None:
+    """早期考試期：研究期訓練好的模型（不修改）預測 2013～2014，只評估考試期間的訊號日。"""
+    import pandas as pd
+
+    from apex.research.ml import early_dataset, frozen_predict
+
+    ds = early_dataset(db, horizon, cache, args.features)
+    in_exam = (ds.X.index.get_level_values("date") >= pd.Timestamp(start))
+    if horizon == 100 or "_early_eval_y" not in cache:
+        cache["_early_eval_y"] = ds.y
+    print(f"\n早期考試｜訓練：研究期｜考試 {start}～{end}｜{horizon} 日｜特徵組 {args.features}")
+    for model in args.model or ["ridge", "lgbm", "xgb"]:
+        if model == (args.model or ["ridge"])[0] and args.target == "big":
+            show(f"對照-波動最大:{horizon}", ds.X["vol_60"][in_exam], ds.y)
+            show(f"對照-近60日強勢:{horizon}", ds.X["ret_60"][in_exam], ds.y)
+        pred = frozen_predict(ds, model, end, args.target)
+        pred = pred[pred.index.get_level_values("date") >= pd.Timestamp(start)]
+        preds.append(pred)
+        print(f"\n模型 {model}｜{horizon} 日｜目標 {args.target}｜研究期訓練一次")
+        show(f"早期-{model}:{horizon}", pred, ds.y)
 
 
 def portfolio_report(db: Database, trades_path, as_of: dt.date | None = None):
@@ -365,13 +412,17 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     p = sub.add_parser("ml", help="機器學習滾動式檢查（預測力）")
-    p.add_argument("--period", default="research", choices=["research", "validation", "holdout"])
+    p.add_argument("--period", default="research", choices=["research", "validation", "holdout", "early"])
     p.add_argument("--model", action="append", choices=["ridge", "lgbm", "xgb"])
-    p.add_argument("--horizon", action="append", type=int, choices=[20, 60, 120])
-    p.add_argument("--target", default="rank", choices=["rank", "up"], help="rank：超額排名；up：上漲機率")
+    p.add_argument("--horizon", action="append", type=int, choices=[20, 40, 60, 100, 120])
+    p.add_argument("--target", default="rank", choices=["rank", "up", "big"],
+                   help="rank：超額排名；up：上漲機率；big：持有期間曾經漲 30% 以上的機率")
     p.add_argument("--features", default="v1", choices=["v1", "v2"], help="v1：原本的特徵；v2：加估值")
     p.add_argument("--vote", action="store_true", help="另外評估所有模型、期間的投票分數")
+    p.add_argument("--placebo", action="store_true",
+                   help="安慰劑檢查：用同月內打亂的答案訓練，成績應接近隨便挑（檢查有沒有偷看答案）")
     p.add_argument("--unlock-holdout", action="store_true")
+    p.add_argument("--unlock-early", action="store_true", help="開啟早期考試期（設定定案後只考一次）")
 
     p = sub.add_parser("portfolio", help="持股報告：損益、回撤、風險提醒（只讀本機交易紀錄）")
     p.add_argument("--as-of", type=_date, help="計算到指定日期（預設最新資料日）")
@@ -450,15 +501,16 @@ def main(argv: list[str] | None = None) -> int:
 
     p = sub.add_parser("research", help="策略研究：標準報表＋試驗紀錄（docs/研究報告/策略研究計畫.md）")
     p.add_argument("--strategy", required=True, action="append", help="可重複，例如 equal:50")
-    p.add_argument("--period", default="research", choices=["research", "validation", "holdout"])
+    p.add_argument("--period", default="research", choices=["research", "validation", "holdout", "early"])
     p.add_argument("--start", type=_date, help="自訂起日（覆蓋 --period）")
     p.add_argument("--end", type=_date, help="自訂迄日")
     p.add_argument("--freq", action="append", choices=["W", "2W", "M", "once"], help="可重複；預設 M")
     p.add_argument("--capital", type=float, default=300_000)
     p.add_argument("--random", type=int, default=0, help="隨機選股對照次數，例如 100")
-    p.add_argument("--goal", default="beat", choices=["beat", "swing"],
+    p.add_argument("--goal", default="beat", choices=["beat", "swing", "big"],
                    help="beat：勝過大盤與 0050；swing：波段、低回撤（回撤目標 −25%%，上限 −30%%）")
     p.add_argument("--unlock-holdout", action="store_true", help="開啟保留期（全部研究結束才用）")
+    p.add_argument("--unlock-early", action="store_true", help="開啟早期考試期（設定定案後只考一次）")
     p.add_argument("--note", default="")
     p.add_argument("--discount", type=float, default=1.0)
     p.add_argument("--min-fee", type=float, default=1.0)

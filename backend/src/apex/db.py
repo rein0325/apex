@@ -166,6 +166,13 @@ CREATE TABLE IF NOT EXISTS period_sync (   -- 月營收、財報已同步的期�
     fetched_at TIMESTAMP NOT NULL,
     PRIMARY KEY (source, period)
 );
+-- FinMind 已完成補齊的代號（since＝資料起始年）；雲端每次執行沒有原始檔快取，靠這張表續跑
+CREATE TABLE IF NOT EXISTS finmind_sync (
+    code VARCHAR NOT NULL,
+    since VARCHAR NOT NULL,
+    fetched_at TIMESTAMP NOT NULL,
+    PRIMARY KEY (code, since)
+);
 -- 一覽表與月營收都沒有產業別時的備援（FinMind，含已下市公司）
 CREATE TABLE IF NOT EXISTS industry_fallback (
     code VARCHAR PRIMARY KEY,

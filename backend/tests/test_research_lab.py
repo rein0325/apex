@@ -24,6 +24,12 @@ def test_holdout_is_locked_by_default():
     with pytest.raises(HoldoutLocked):
         check_range(dt.date(2020, 1, 1), dt.date(2025, 3, 1))
     check_range(dt.date(2020, 1, 1), dt.date(2024, 12, 31))
+    with pytest.raises(HoldoutLocked):  # 早期考試期另外上鎖
+        period_range("early", last)
+    assert period_range("early", last, unlock_early=True) == (dt.date(2013, 1, 2), dt.date(2014, 12, 31))
+    with pytest.raises(HoldoutLocked):
+        check_range(dt.date(2014, 6, 1), dt.date(2016, 3, 1))
+    check_range(dt.date(2014, 6, 1), dt.date(2016, 3, 1), unlock_early=True)
 
 
 def test_biweekly_rebalance_dates():
@@ -208,3 +214,27 @@ def test_stop_loss_and_min_trade():
     y = ExitRules(lambda ctx: {"1101": 0.5, "1102": 0.5}, Features(data), stop=0.10)
     r0 = run(data, y, data.days[0].date(), data.days[-1].date(), 100_000, "D")
     assert len(r0.trades) > len(r.trades)
+
+
+def test_take_profit_and_max_hold():
+    from apex.backtest import run
+    from apex.research.features import Features
+    from apex.research.strategies import ExitRules, build
+    data = _path_data([100.0] * 3 + [110, 120, 130, 135, 140] + [140.0] * 5)
+    x = build("buyhold:1101+X:-:-:-:30:100", Features(data))
+    assert (x.take, x.hold) == (pytest.approx(0.30), 100)
+    r = run(data, x, data.days[0].date(), data.days[-1].date(), 100_000, "D", min_trade=0.02)
+    assert x.exits == [(data.days[5], "1101", "停利")]  # 收盤 130 ≥ 100 × 1.3
+    assert list(r.trades["side"]) == ["buy", "sell"] and r.trades["date"].iloc[1] == data.days[6].date()
+
+    flat = _path_data([100.0] * 15)
+    y = ExitRules(lambda ctx: {"1101": 1.0}, Features(flat), hold=5)
+    run(flat, y, flat.days[0].date(), flat.days[-1].date(), 100_000, "D", min_trade=0.02)
+    assert y.exits[0] == (flat.days[6], "1101", "持有期滿")  # 第 1 天開盤買進，滿 5 個交易日
+
+
+def test_price_limit_was_7pct_before_june_2015():
+    from apex.backtest import CostModel
+    c = CostModel()
+    assert c.limit_at(dt.date(2015, 5, 29)) == pytest.approx(0.065)
+    assert c.limit_at(dt.date(2015, 6, 1)) == pytest.approx(c.limit_threshold)

@@ -40,6 +40,9 @@ class Thresholds:
 GOALS = {
     "beat": Thresholds(),
     "swing": Thresholds(goal="swing", max_drawdown=-0.30, target_drawdown=-0.25),
+    # 2026-11-21 使用者決定：主要資金放 0050 保底；額外資金（約 10～20%）找 2～5 個月內大漲的股票，
+    # 這部分最多可接受 −40%（docs/研究報告/大漲股研究.md）
+    "big": Thresholds(goal="big", max_drawdown=-0.40, random_percentile=0.90),
 }
 
 
@@ -300,6 +303,8 @@ class Lab:
         th = self.thresholds
         if th.goal == "swing":
             return self._swing_checks(m, bench, full, rnd)
+        if th.goal == "big":
+            return self._big_checks(m, bench, full, rnd)
         tr, e50 = bench["TAIEX_TR"], bench["0050"]
         ex = full["超額(指數)"]
         beat = float((ex > 0).mean()) if len(ex) else float("nan")
@@ -315,6 +320,25 @@ class Lab:
                      f"{beat:.0%} 的完整年份勝過報酬指數（門檻 {th.beat_year_ratio:.0%}）"),
             "不靠單一年份": (None, "年份不足") if rest is None else
             (bool(rest > 0), f"扣除超額最好的一年後，其餘年份累積超額 {rest:+.1%}"),
+        }
+        if rnd is None or not len(rnd):
+            checks["隨機選股"] = (None, "未計算")
+        else:
+            pct = float((rnd["cagr"] < m["cagr"]).mean())
+            checks["隨機選股"] = (pct >= th.random_percentile,
+                              f"高於 {pct:.0%} 的隨機選股（門檻 {th.random_percentile:.0%}）")
+        return checks
+
+    def _big_checks(self, m: dict, bench: dict, full: pd.DataFrame,
+                    rnd: pd.DataFrame | None) -> dict[str, tuple[bool | None, str]]:
+        """大漲股（額外資金）：賺錢、回撤在 −40% 內、明顯勝過隨機選股；和 0050 的比較只列出、不算過關條件。"""
+        th = self.thresholds
+        e50 = bench["0050"]
+        dd = m["max_drawdown"]
+        checks: dict[str, tuple[bool | None, str]] = {
+            "年化為正": (bool(m["cagr"] > 0), f"年化 {m['cagr']:+.2%}"),
+            "最大回撤": (bool(dd >= th.max_drawdown), f"{dd:+.1%}（上限 {th.max_drawdown:.0%}）"),
+            "和 0050 比較": (None, f"年化 {m['cagr']:+.2%} vs 0050 {e50['cagr']:+.2%}（只列出）"),
         }
         if rnd is None or not len(rnd):
             checks["隨機選股"] = (None, "未計算")

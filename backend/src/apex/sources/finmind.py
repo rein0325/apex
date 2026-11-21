@@ -20,6 +20,11 @@ DATASETS = {"revenue": "TaiwanStockMonthRevenue", "income": "TaiwanStockFinancia
             "balance": "TaiwanStockBalanceSheet"}
 
 
+# 2026-11-22 回補早期資料：月營收從 2011、財報從 2013（IFRS，與觀測站一致）起
+MIN_REVENUE_YEAR = 2011
+MIN_FIN_YEAR = 2013
+
+
 def params(dataset: str, code: str, start: str = "2015-01-01", end: str = "2030-12-31") -> dict[str, str]:
     if dataset == "info":  # 全部公司一次回傳，code 只是原始檔的鍵
         return {"dataset": "TaiwanStockInfo"}
@@ -65,7 +70,7 @@ def parse_revenue(text: str, code: str, market: str, name: str) -> list[Revenue]
     out = []
     for r in _data(text):
         y, m = int(r["revenue_year"]), int(r["revenue_month"])
-        if y < 2015:
+        if y < MIN_REVENUE_YEAR:
             continue
         out.append(Revenue(y, m, market, code, name, None, int(r["revenue"]), None, None, None, None,
                            revenue_available(y, m)))
@@ -76,7 +81,7 @@ def _by_quarter(rows: list[dict]) -> dict[tuple[int, int], dict[str, float]]:
     out: dict[tuple[int, int], dict[str, float]] = defaultdict(dict)
     for r in rows:
         y, mo = int(r["date"][:4]), int(r["date"][5:7])
-        if mo % 3 or y < 2015:
+        if mo % 3 or y < MIN_FIN_YEAR:
             continue
         out[(y, mo // 3)][r["type"]] = float(r["value"])
     return out

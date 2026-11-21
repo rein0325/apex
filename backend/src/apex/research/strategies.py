@@ -273,6 +273,30 @@ def ml_up_prob(arg: str, f: Features) -> Strategy:
     return MLStrategy(_ML_SCORES[key], n, buffer, min_score=min_prob)
 
 
+@register("BIG", "ML")
+def ml_big(arg: str, f: Features) -> Strategy:
+    """BIG:模型:期間:檔數:緩衝[:市值前K大[:特徵組]]：大漲機率最高的前 n 檔（docs/研究報告/大漲股研究.md）。
+
+    模型預測持有期間內曾經漲 30% 以上的機率；模型、期間可用 / 串接表示投票，
+    例如 BIG:lgbm/xgb/ridge:100:6:3::v2。通常搭配 +X:-:-:-:30:100（漲 30% 停利、最多持有 100 日）。
+    """
+    from apex.research.ml import FEATURE_SETS, MLStrategy, vote_scores
+    parts = arg.split(":") + [""] * 8
+    models = [m for m in parts[0].split("/") if m] or ["lgbm"]
+    horizons = [int(h) for h in parts[1].split("/") if h] or [100]
+    n, buffer = _params(":".join(parts[2:4]), default_n=6, default_buffer=3.0)
+    top_k = int(parts[4]) if parts[4] else None
+    features = parts[5] or "v2"
+    if features not in FEATURE_SETS:
+        raise ValueError(f"未知特徵組 {features}，可用：{', '.join(FEATURE_SETS)}")
+    end = f.days[-1].date()
+    key = ("big", tuple(models), tuple(horizons), features, end)
+    if key not in _ML_SCORES:
+        _ML_SCORES[key] = vote_scores(f.db, end, models, horizons, cache=_ML_DATA, features=features,
+                                      target="big")
+    return MLStrategy(_ML_SCORES[key], n, buffer, f["mcap"] if top_k else None, top_k)
+
+
 # ── D. 風險調整層 ────────────────────────────────────────────────────────
 
 def _regime(f: Features) -> pd.DataFrame:
@@ -386,6 +410,8 @@ class ExitRules:
     - trail：收盤價比買進後的最高收盤價低 trail 以上就全部賣出（移動停損，鎖住部分獲利）。
     - regime：市場狀態不好（空頭，或高波動且指數在 200 日均線下）時，總持股只留這個比例；
       狀態好壞轉換的當天立刻重新選股並調整，不等到月底。
+    - take：收盤價比買進價高 take 以上就全部賣出（停利；docs/研究報告/大漲股研究.md）。
+    - hold：持有滿 hold 個交易日就賣出（之後的選股日可以重新買進）。
 
     基礎策略只在每月最後一個交易日（與狀態轉換日）選股；其他日子維持現有持股，只處理出場。
     被停損賣掉的股票，到下次選股前不會再買回。價格都用還原價（除權息不會誤觸停損）。
@@ -395,9 +421,11 @@ class ExitRules:
     min_trade = 0.02  # 權重差距小於總資產 2% 不交易，避免每天為了漂移來回買賣
 
     def __init__(self, base: Strategy, f: Features, stop: float | None = None, trail: float | None = None,
-                 regime: float | None = None):
+                 regime: float | None = None, take: float | None = None, hold: int | None = None):
         self.base, self.f = base, f
         self.stop, self.trail, self.regime = stop, trail, regime
+        self.take, self.hold = take, hold
+        self.entry_i: dict[str, int] = {}
         self.month_ends = rebalance_dates(f.days, "M")
         self.entry: dict[str, float] = {}
         self.peak: dict[str, float] = {}
@@ -413,11 +441,13 @@ class ExitRules:
         for c in [c for c in self.entry if c not in held]:
             self.entry.pop(c)
             self.peak.pop(c, None)
+            self.entry_i.pop(c, None)
         for c in held:
             close = self._price("adj_close", i, c)
             if c not in self.entry:  # 第一次看到持有＝今天開盤買進
                 ref = self._price("adj_open", i, c)
                 self.entry[c] = self.peak[c] = close if math.isnan(ref) else ref
+                self.entry_i[c] = i
             if not math.isnan(close):
                 self.peak[c] = max(self.peak[c], close)
 
@@ -441,6 +471,10 @@ class ExitRules:
                 reason = "停損"
             elif self.trail is not None and close <= self.peak[c] * (1 - self.trail):
                 reason = "移動停損"
+            elif self.take is not None and close >= self.entry[c] * (1 + self.take):
+                reason = "停利"
+            elif self.hold is not None and i - self.entry_i.get(c, i) >= self.hold:
+                reason = "持有期滿"
             if reason:
                 w[c] = 0.0
                 self.exits.append((ctx.date, c, reason))
@@ -452,12 +486,14 @@ def _opt(x: str) -> float | None:
 
 
 def exit_rules(strategy: Strategy, arg: str, f: Features) -> ExitRules:
-    """X:停損%:移動停損%:壞狀態持股比例，例如 X:15:20:0.5；不用的項目寫 -，例如 X:-:20、X:-:-:0.3。"""
-    parts = (arg.split(":") + ["", "", ""])[:3]
-    stop, trail = (_opt(p) for p in parts[:2])
+    """X:停損%:移動停損%:壞狀態持股比例[:停利%[:最長持有日]]，例如 X:15:20:0.5、X:-:-:-:30:100；
+    不用的項目寫 -，例如 X:-:20、X:-:-:0.3。"""
+    parts = (arg.split(":") + [""] * 5)[:5]
+    stop, trail, take = (_opt(p) for p in (parts[0], parts[1], parts[3]))
     regime = None if parts[2] in ("", "-") else float(parts[2])
-    pct = [None if x is None else x / 100 for x in (stop, trail)]
-    return ExitRules(strategy, f, pct[0], pct[1], regime)
+    hold = None if parts[4] in ("", "-", "0") else int(parts[4])
+    pct = [None if x is None else x / 100 for x in (stop, trail, take)]
+    return ExitRules(strategy, f, pct[0], pct[1], regime, pct[2], hold)
 
 
 OVERLAYS = {"D1": vol_target, "D2": regime_exposure, "D3": inverse_vol, "X": exit_rules}

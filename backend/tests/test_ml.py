@@ -175,3 +175,40 @@ def test_ml_strategy_gate_switches_to_0050():
     assert s(_ctx(d1)) == {"0050": 1.0}
     assert s.gated == [d1]
     assert s(_ctx(d2)) == {"A": 1.0}  # 歷史不足時照常選股
+
+
+def test_big_target_uses_highest_close_in_holding_period():
+    from apex.research.ml import BIG_LEVEL, evaluate_big, target_values
+    data = _random_data(n_days=600, n_codes=8)
+    ds, _ = _ds(data, horizon=20)
+    d = ds.X.index.get_level_values("date")[0]
+    i = data.days.get_loc(d)
+    code = "1103"
+    buy = data["adj_open"].ffill().iloc[i + 1][code]
+    peak = data["adj_close"].ffill().iloc[i + 1:i + 21][code].max()
+    assert ds.y.loc[(d, code), "max_ret"] == pytest.approx(peak / buy - 1)
+    big = target_values(ds, "big")
+    assert big.dropna().isin([0.0, 1.0]).all()
+    assert (big.dropna() == (ds.y["max_ret"].dropna() >= BIG_LEVEL)).all()
+
+    d = pd.Timestamp("2024-01-31")
+    codes = [f"C{i}" for i in range(20)]
+    idx = pd.MultiIndex.from_product([[d], codes], names=["date", "code"])
+    score = pd.Series(range(20, 0, -1), index=idx, dtype=float)
+    y = pd.DataFrame({"max_ret": [0.5, 0.4, 0.1, 0.0, 0.31, 0.05] + [0.0] * 13 + [0.6],
+                      "fwd_ret": [0.2] * 5 + [-0.3] + [0.0] * 14}, index=idx)
+    ev = evaluate_big(score, y)
+    assert ev.loc["全期", "hit"] == pytest.approx(3 / 6)
+    assert ev.loc["全期", "base"] == pytest.approx(4 / 20)
+    assert ev.loc["全期", "lift"] == pytest.approx(2.5)
+    assert ev.loc["全期", "top_low"] == pytest.approx(1 / 6)
+
+
+def test_placebo_keeps_monthly_rate_but_breaks_order():
+    from apex.research.ml import placebo
+    dates = pd.date_range("2020-01-31", periods=3, freq="ME")
+    idx = pd.MultiIndex.from_product([dates, [f"C{i}" for i in range(50)]], names=["date", "code"])
+    yv = pd.Series(np.tile(np.r_[np.ones(10), np.zeros(40)], 3), index=idx)
+    out = placebo(yv, seed=1)
+    assert out.groupby(level="date").sum().tolist() == [10.0, 10.0, 10.0]  # 每月大漲數不變
+    assert not out.equals(yv)                                              # 但哪幾檔大漲被打亂

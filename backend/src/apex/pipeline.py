@@ -27,7 +27,7 @@ HOLIDAY_SOURCE = "twse_holidays"  # 鍵：年度
 ISIN_SOURCES = {"TWSE": "twse_isin", "TPEX": "tpex_isin"}  # 鍵：YYYYMM（每月一份）
 TWSE_DELISTED = "twse_delisted"  # 鍵：擷取日 YYYYMMDD（一次回傳全部年度）
 TPEX_DELISTED = "tpex_delisted"  # 鍵：年度
-DELIST_START_YEAR = 2015
+DELIST_START_YEAR = 2011  # 2026-11-22 回補 2011～2014（docs/研究報告/大漲股研究.md 早期考試）
 
 # 每日資料集：資料表 → {市場: (來源名稱, 網址, 參數函式, 解析函式)}。鍵為 YYYYMMDD。
 DAILY_DATASETS = {
@@ -48,6 +48,8 @@ REVENUE_SOURCES = {(m, f): f"mops_revenue_{fundamentals.MARKET_TYPEK[m]}_{int(f)
 FIN_SOURCES = {(s, m): f"mops_{s}_{fundamentals.MARKET_TYPEK[m]}"
                for s in fundamentals.FIN_URLS for m in MARKETS}
 FUNDAMENTAL_START_YEAR = 2015
+IFRS_START_YEAR = 2013  # 觀測站彙總財報從 2013（IFRS）起；更早是舊格式，不抓
+FINMIND_START = "2011"  # FinMind 補下市公司資料的起始年；原始檔鍵為「代號@起始年」
 COMPLETE_AFTER_DAYS = 30  # 公告期限過後 30 天視為完整（延遲申報、更正）
 
 
@@ -56,7 +58,10 @@ def http_fetcher(client: HttpClient) -> Fetcher:
 
     def fetch(source: str, key: str) -> str:
         if source.startswith("finmind_"):
-            return finmind_client.get_text(finmind.API, finmind.params(source.removeprefix("finmind_"), key))
+            code, _, since = key.partition("@")
+            start = f"{since}-01-01" if since else "2015-01-01"
+            return finmind_client.get_text(finmind.API,
+                                           finmind.params(source.removeprefix("finmind_"), code, start))
         if source == "twse_quotes":
             return client.get_text(twse.QUOTES_URL, twse.quotes_params(_key_date(key)))
         if source == "tpex_quotes":
@@ -302,7 +307,7 @@ class Pipeline:
                 run(source, key, complete, self.db.complete_periods(source), key,
                     lambda t, m=market, y=year, mo=month: fundamentals.parse_revenue(t, m, y, mo), save)
 
-        for year in range(start_year, today.year + 1):
+        for year in range(max(start_year, IFRS_START_YEAR), today.year + 1):
             for quarter in range(1, 5):
                 quarter_end = dt.date(year, quarter * 3, 1)
                 if quarter_end >= today.replace(day=1):
@@ -324,7 +329,8 @@ class Pipeline:
     def sync_finmind(self, refetch: bool = False) -> dict[str, int]:
         """以 FinMind 補齊已下市櫃普通股的月營收與財報（觀測站彙總表只含目前上市櫃公司）。
 
-        原始檔以代號為鍵；已下市的公司資料不會再變動，所以已下載的不重抓。額度用完時停止，下次續跑。
+        原始檔以「代號@FINMIND_START」為鍵（2026-11-22 起從 2011 年抓起，舊的 2015 年起原始檔不再使用）；
+        已下市的公司資料不會再變動，所以已下載的不重抓。額度用完時停止，下次續跑。
         """
         codes = self.db.con.execute("""
             SELECT code, market, name FROM securities
@@ -340,11 +346,15 @@ class Pipeline:
             self.db.con.executemany("INSERT INTO industry_fallback VALUES (?, ?, 'finmind')",
                                     sorted(industries.items()))
             counts["industry"] = len(industries)
+        done = {r[0] for r in self.db.con.execute(
+            "SELECT code FROM finmind_sync WHERE since = ?", [FINMIND_START]).fetchall()}
         for n, (code, market, name) in enumerate(codes, 1):
+            if code in done and not refetch:
+                continue
             for ds in ("revenue", "income", "balance"):
                 source = f"finmind_{ds}"
                 try:
-                    text = self._get(source, code, refetch)
+                    text = self._get(source, f"{code}@{FINMIND_START}", refetch)
                     if ds == "revenue":
                         rows = finmind.parse_revenue(text, code, market, name)
                         df = pd.DataFrame([vars(r) for r in rows],
@@ -357,12 +367,14 @@ class Pipeline:
                                            for (y, q), r in parse(text, code, name).items()])
                         table = "fin_income" if ds == "income" else "fin_balance"
                 except NotPublished as e:
-                    self.raw.delete(source, code)
+                    self.raw.delete(source, f"{code}@{FINMIND_START}")
                     log.warning("%s，已處理 %d/%d 檔，下次續跑", e, n - 1, len(codes))
                     return counts
                 if len(df):
                     df["source"], df["fetched_at"] = "finmind", dt.datetime.now().replace(microsecond=0)
                 counts[ds] += self.db.insert_supplement(table, "finmind", code, df)
+            self.db.con.execute("INSERT OR REPLACE INTO finmind_sync VALUES (?, ?, ?)",
+                                [code, FINMIND_START, dt.datetime.now().replace(microsecond=0)])
             log.info("[%d/%d] FinMind %s %s", n, len(codes), code, name)
         return counts
 

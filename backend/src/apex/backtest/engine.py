@@ -202,7 +202,7 @@ def _execute(target: dict[str, float], t: pd.Timestamp, i: int, data: MarketData
             events.append(f"{today} {code} 無成交，賣單未執行")
             continue
         raw, adj, day_value, move = q
-        if move <= -costs.limit_threshold:
+        if move <= -costs.limit_at(today):
             events.append(f"{today} {code} 開盤跌停（{move:.1%}），賣單未執行")
             continue
         sell_value = min(-delta, units[code] * adj, day_value * costs.max_participation)
@@ -231,7 +231,7 @@ def _execute(target: dict[str, float], t: pd.Timestamp, i: int, data: MarketData
             events.append(f"{today} {code} 無成交，買單未執行")
             continue
         raw, adj, day_value, move = q
-        if move >= costs.limit_threshold:
+        if move >= costs.limit_at(today):
             events.append(f"{today} {code} 開盤漲停（{move:+.1%}），買單未執行")
             continue
         price = costs.buy_price(raw)

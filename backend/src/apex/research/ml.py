@@ -45,11 +45,14 @@ HORIZONS = (20, 60, 120)
 # 估值特徵（docs/研究報告/模型改進研究.md ①）：v2 ＝ 原本的特徵＋估值
 VALUATION_FEATURES = ["ey", "bp", "dy"]
 FEATURE_SETS = {"v1": STOCK_FEATURES, "v2": STOCK_FEATURES + VALUATION_FEATURES}
+# 大漲股（docs/研究報告/大漲股研究.md）：持有期間內收盤價曾經比買進價高 BIG_LEVEL 以上
+BIG_LEVEL = 0.30
 
 
 @dataclass
 class Dataset:
-    """樣本表：index 為 (date, code)；X 為特徵，y 含 fwd_ret、excess、label（超額排名）、label_end。"""
+    """樣本表：index 為 (date, code)；X 為特徵，y 含 fwd_ret、excess、label（超額排名）、label_end、
+    max_ret（持有期間最高收盤相對買進價的漲幅）。"""
 
     X: pd.DataFrame
     y: pd.DataFrame
@@ -82,6 +85,7 @@ def build_dataset(f: Features, horizon: int = 60, dates: list[pd.Timestamp] | No
     reg = (regime if regime is not None else market_regime(data)).reindex(dates)
     tr = (tr if tr is not None else index_series(data, "TAIEX_TR")).reindex(days).ffill()
     ao = data["adj_open"].ffill()
+    ac = data["adj_close"].ffill()
 
     rows_X, rows_y = [], []
     for d in dates:
@@ -97,7 +101,8 @@ def build_dataset(f: Features, horizon: int = 60, dates: list[pd.Timestamp] | No
         X["mkt_breadth"] = np.float32(reg.at[d, "breadth"])
         X.index = pd.MultiIndex.from_product([[d], X.index], names=["date", "code"])
 
-        y = pd.DataFrame(index=X.index, columns=["fwd_ret", "excess", "label", "label_end"], dtype="float64")
+        y = pd.DataFrame(index=X.index, columns=["fwd_ret", "excess", "label", "label_end", "max_ret"],
+                         dtype="float64")
         j0, j1 = i + 1, i + 1 + horizon
         if j1 < len(days):
             buy, sell = ao.iloc[j0].reindex(u), ao.iloc[j1].reindex(u)
@@ -107,6 +112,7 @@ def build_dataset(f: Features, horizon: int = 60, dates: list[pd.Timestamp] | No
             y["excess"] = ret - mkt
             y["label"] = pd.Series(ret).rank(pct=True).to_numpy()
             y["label_end"] = j1
+            y["max_ret"] = (ac.iloc[j0:j1].reindex(columns=u).max() / buy - 1).to_numpy()
         rows_X.append(X)
         rows_y.append(y)
     X = pd.concat(rows_X)
@@ -117,12 +123,14 @@ def build_dataset(f: Features, horizon: int = 60, dates: list[pd.Timestamp] | No
 
 # ── 模型 ────────────────────────────────────────────────────────────────
 
-TARGETS = ("rank", "up")  # rank：超額報酬排名（迴歸）；up：持有期間報酬是否為正（分類，輸出機率）
+# rank：超額報酬排名（迴歸）；up：持有期間報酬是否為正；big：持有期間曾經漲 BIG_LEVEL 以上（分類，輸出機率）
+TARGETS = ("rank", "up", "big")
+CLASSIFY = ("up", "big")
 
 
 def make_model(name: str, seed: int = 0, target: str = "rank"):
     """事先固定的超參數（不在研究期反覆調整，避免過度擬合）。"""
-    if target == "up":
+    if target in CLASSIFY:
         return _make_classifier(name, seed)
     if name == "ridge":
         from sklearn.linear_model import Ridge
@@ -213,16 +221,33 @@ def target_values(ds: Dataset, target: str) -> pd.Series:
         return ds.y["label"]
     if target == "up":
         return (ds.y["fwd_ret"] > 0).astype(float).where(ds.y["fwd_ret"].notna())
+    if target == "big":
+        return (ds.y["max_ret"] >= BIG_LEVEL).astype(float).where(ds.y["max_ret"].notna())
     raise ValueError(f"未知目標 {target}，可用：{', '.join(TARGETS)}")
 
 
+def placebo(yv: pd.Series, seed: int = 0) -> pd.Series:
+    """安慰劑：同一個訊號日內把答案隨機打亂（每月的大漲比例不變，但和特徵的關係被切斷）。
+
+    用打亂的答案訓練，樣本外成績應該和隨便挑差不多；如果還是很好，代表流程有偷看答案的漏洞。
+    """
+    rng = np.random.default_rng(seed)
+    out = yv.copy()
+    for _, idx in yv.groupby(level="date").indices.items():
+        out.iloc[idx] = rng.permutation(yv.iloc[idx].to_numpy())
+    return out
+
+
 def walk_forward(ds: Dataset, model: str, test_years: list[int], seed: int = 0,
-                 min_train_years: int = 2, target: str = "rank") -> tuple[pd.Series, list[Fold]]:
+                 min_train_years: int = 2, target: str = "rank",
+                 shuffle: bool = False) -> tuple[pd.Series, list[Fold]]:
     """每年重新訓練一次。訓練樣本必須在測試年第一個交易日之前就已實現標籤（purge），測試年只預測。
 
-    target='up' 時輸出上漲機率（0～1）。
+    target='up'、'big' 時輸出機率（0～1）。shuffle=True 時用打亂的答案訓練（安慰劑檢查，見 placebo）。
     """
     yv = target_values(ds, target)
+    if shuffle:
+        yv = placebo(yv, seed)
     dates = ds.X.index.get_level_values("date")
     preds, folds = [], []
     for year in test_years:
@@ -238,7 +263,7 @@ def walk_forward(ds: Dataset, model: str, test_years: list[int], seed: int = 0,
         m = make_model(model, seed, target)
         m.fit(ds.X[train_mask], yv[train_mask].to_numpy())
         Xt = ds.X[test_mask]
-        raw = m.predict_proba(Xt)[:, 1] if target == "up" else m.predict(Xt)
+        raw = m.predict_proba(Xt)[:, 1] if target in CLASSIFY else m.predict(Xt)
         p = pd.Series(raw, index=ds.X.index[test_mask], name="score")
         preds.append(p)
         folds.append(Fold(year, int(train_mask.sum()), ds.y["label_end"][train_mask].max(), time.time() - t0))
@@ -271,6 +296,35 @@ def evaluate_predictions(pred: pd.Series, y: pd.DataFrame, top: float = 0.1,
                           "base": [per["base"].mean()], "months": [len(per)]}, index=["全期"])
     out.index = out.index.astype(str)
     return pd.concat([out, total])
+
+
+def evaluate_big(pred: pd.Series, y: pd.DataFrame, top_n: int = 6, level: float = BIG_LEVEL,
+                 min_names: int = 20) -> pd.DataFrame:
+    """大漲股的命中率（逐年與全期）：
+    hit：分數前 top_n 名中，持有期間曾經漲 level 以上的比例；base：全部股票的同一比例；
+    lift：hit ÷ base（隨便挑的幾倍）；top_ret、all_ret：前 top_n 名與全部股票期末報酬的平均；
+    top_low：前 top_n 名期末報酬 ≤ −20% 的比例（大跌的代價）。"""
+    df = pd.DataFrame({"score": pred}).join(y[["max_ret", "fwd_ret"]]).dropna()
+    rows = []
+    for d, g in df.groupby(level="date"):
+        if len(g) < min_names:
+            continue
+        top = g.nlargest(top_n, "score")
+        rows.append((d, (top["max_ret"] >= level).mean(), (g["max_ret"] >= level).mean(),
+                     top["fwd_ret"].mean(), g["fwd_ret"].mean(), (top["fwd_ret"] <= -0.2).mean()))
+    per = pd.DataFrame(rows, columns=["date", "hit", "base", "top_ret", "all_ret", "top_low"])
+    per = per.set_index("date")
+    if per.empty:
+        return per
+    cols = ["hit", "base", "top_ret", "all_ret", "top_low"]
+    out = per.groupby(per.index.year)[cols].mean()
+    out["months"] = per.groupby(per.index.year).size()
+    total = per[cols].mean().to_frame("全期").T
+    total["months"] = len(per)
+    out.index = out.index.astype(str)
+    out = pd.concat([out, total])
+    out["lift"] = out["hit"] / out["base"]
+    return out
 
 
 def combine(preds: list[pd.Series]) -> pd.Series:
@@ -380,12 +434,54 @@ def dataset_for(db, end: dt.date, horizon: int, cache: dict | None = None, featu
     return ds
 
 
+EARLY_LOAD_START = dt.date(2011, 1, 3)  # 早期考試的資料起點（2011～2012 為特徵暖機）
+RESEARCH_END = dt.date(2022, 12, 30)
+
+
+def early_dataset(db, horizon: int, cache: dict | None = None, features: str = "v1") -> Dataset:
+    """2011～研究期結束的資料集（早期考試用）。"""
+    from apex.backtest import load
+    key = ("early", horizon, features)
+    if cache is not None and key in cache:
+        return cache[key]
+    fkey = ("_features_early",)
+    if cache is not None and fkey in cache:
+        f = cache[fkey]
+    else:
+        f = Features(load(db, EARLY_LOAD_START, RESEARCH_END))
+        if cache is not None:
+            cache[fkey] = f
+    ds = build_dataset(f, horizon, stock_features=FEATURE_SETS[features])
+    if cache is not None:
+        cache[key] = ds
+    return ds
+
+
+def frozen_predict(ds: Dataset, model: str, test_end: dt.date, target: str = "rank",
+                   seed: int = 0) -> pd.Series:
+    """早期考試：只用研究期（ML_START～RESEARCH_END、標籤在研究期內已揭曉）的樣本訓練一次，
+    預測 test_end 以前（ML_START 之前）的訊號日。考試期間的資料完全不參與訓練。"""
+    yv = target_values(ds, target)
+    dates = ds.X.index.get_level_values("date")
+    train = ((dates >= pd.Timestamp(ML_START)) & (ds.y["label_end"] <= pd.Timestamp(RESEARCH_END)).to_numpy()
+             & yv.notna().to_numpy())
+    test = dates <= pd.Timestamp(min(test_end, ML_START - dt.timedelta(days=1)))
+    m = make_model(model, seed, target)
+    m.fit(ds.X[train], yv[train].to_numpy())
+    Xt = ds.X[test]
+    raw = m.predict_proba(Xt)[:, 1] if target in CLASSIFY else m.predict(Xt)
+    return pd.Series(raw, index=ds.X.index[test], name="score")
+
+
 def scores_for(db, end: dt.date, model: str, horizon: int, cache: dict | None = None,
                target: str = "rank", features: str = "v1") -> pd.Series:
     """從 ML_START 到 end 建資料集，對 ML_START+2 年起每一年做滾動式預測，回傳全部分數。
 
-    end 必須已通過期間檢查（保留期鎖定由呼叫端負責）。
+    end 早於 ML_START 時（早期考試期）改用 frozen_predict：研究期訓練好的模型，不修改。
+    end 必須已通過期間檢查（保留期、早期考試期的鎖定由呼叫端負責）。
     """
+    if end < ML_START:
+        return frozen_predict(early_dataset(db, horizon, cache, features), model, end, target)
     ds = dataset_for(db, end, horizon, cache, features)
     years = sorted(set(ds.X.index.get_level_values("date").year))
     pred, _ = walk_forward(ds, model, [y for y in years if y >= ML_START.year + 2], target=target)
@@ -393,6 +489,7 @@ def scores_for(db, end: dt.date, model: str, horizon: int, cache: dict | None = 
 
 
 def vote_scores(db, end: dt.date, models: list[str], horizons: list[int], cache: dict | None = None,
-                features: str = "v1") -> pd.Series:
+                features: str = "v1", target: str = "rank") -> pd.Series:
     """多個模型、多個預測期間的投票分數（各自滾動式預測後，用 combine 平均當月排名）。"""
-    return combine([scores_for(db, end, m, h, cache, features=features) for h in horizons for m in models])
+    return combine([scores_for(db, end, m, h, cache, target=target, features=features)
+                    for h in horizons for m in models])

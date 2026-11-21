@@ -6,7 +6,12 @@
 
 from __future__ import annotations
 
+import datetime as dt
 from dataclasses import dataclass
+
+# 台股漲跌幅限制 2015-06-01 起由 7% 放寬為 10%；之前的回測用 7% 判斷漲跌停
+LIMIT_10PCT_FROM = dt.date(2015, 6, 1)
+OLD_LIMIT_THRESHOLD = 0.065
 
 
 @dataclass(frozen=True)
@@ -23,6 +28,10 @@ class CostModel:
     limit_threshold: float = 0.095  # 開盤相對前收（還原）漲跌幅達此值視為漲跌停，買不到／賣不掉
     # 下市時以最後收盤價的比例轉為現金（合併換股通常接近 1，下市清算可能遠低於 1）
     delist_recovery: float = 1.0
+
+    def limit_at(self, date: dt.date) -> float:
+        """date 當天視為漲跌停的開盤漲跌幅（2015-06-01 前漲跌幅限制為 7%）。"""
+        return OLD_LIMIT_THRESHOLD if date < LIMIT_10PCT_FROM else self.limit_threshold
 
     def commission(self, value: float) -> float:
         if value <= 0:

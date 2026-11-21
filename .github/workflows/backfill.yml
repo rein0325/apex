@@ -1,0 +1,95 @@
+name: 資料回補
+
+# 回補 2011～2014 的資料，給大漲股研究的早期考試用（docs/研究報告/大漲股研究.md）。
+# 只在 main 以外的分支修改 .github/backfill.json 或這個檔案後推送時執行（新工作流程進 main 前無法手動執行）。
+# 每一步都可以中斷續跑：已成功的日子、期間、代號會略過；一次跑不完就再推送一次 backfill.json。
+# 資料庫存在這個分支的 Actions 快取（其他分支的研究可以讀到；main 的每日更新讀不到，不影響網站）。
+on:
+  push:
+    branches-ignore: [main]
+    paths: [.github/backfill.json, .github/workflows/backfill.yml]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: backfill-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  TZ: Asia/Taipei
+  PYTHONIOENCODING: utf-8
+  APEX_DB_KEY: ${{ secrets.APEX_DB_KEY }}
+  SNAPSHOT: ${{ github.workspace }}/snapshot/apex-db.tar.enc
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.13"
+      - run: uv sync --frozen
+      - name: 還原資料庫
+        id: cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.SNAPSHOT }}
+          key: apex-db-none
+          restore-keys: apex-db-
+      - name: 沒有快取時從 Release 下載
+        if: steps.cache.outputs.cache-matched-key == ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release download db-seed --pattern apex-db.tar.enc --dir "$(dirname "$SNAPSHOT")"
+      - name: 解密並還原
+        id: restore
+        run: uv run python -m apex snapshot restore "$SNAPSHOT"
+
+      - name: 交易日曆、指數、除權息、終止上市櫃
+        continue-on-error: true
+        timeout-minutes: 40
+        run: |
+          uv run python -m apex calendar --start 2011-01 --end 2014-12
+          uv run python -m apex indices --start 2011-01 --end 2014-12
+          uv run python -m apex actions --start-year 2011 --end-year 2014
+          uv run python -m apex listings
+      - name: 每日行情
+        continue-on-error: true
+        timeout-minutes: 150
+        run: uv run python -m apex backfill --start 2011-01-03 --end 2014-12-31
+      - name: 融資融券、三大法人（證交所 2012-05 起才有）
+        continue-on-error: true
+        timeout-minutes: 100
+        run: |
+          uv run python -m apex chips --dataset margin --start 2011-01-03 --end 2014-12-31
+          uv run python -m apex chips --dataset institutional --start 2012-05-02 --end 2014-12-31
+      - name: 月營收（2011 起）、財報（2013 起，IFRS）
+        continue-on-error: true
+        timeout-minutes: 30
+        run: uv run python -m apex fundamentals --start-year 2011
+      - name: FinMind 補已下市公司（2011 起；額度用完就停，下次續跑）
+        continue-on-error: true
+        timeout-minutes: 25
+        run: uv run python -m apex finmind
+      - name: 重建還原因子、資料狀態
+        if: always() && steps.restore.outcome == 'success'
+        run: |
+          uv run python -m apex actions --start-year 2011 --end-year 2011
+          uv run python -m apex status | tee status.txt
+          echo "::notice title=回補狀態::$(awk 'BEGIN { ORS = "%0A" } { gsub(/%/, "%25"); gsub(/[[:cntrl:]]/, ""); print }' status.txt)"
+
+      - name: 加密匯出
+        if: always() && steps.restore.outcome == 'success'
+        run: uv run python -m apex snapshot export "$SNAPSHOT"
+      - name: 保存到這個分支的快取
+        if: always() && steps.restore.outcome == 'success'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.SNAPSHOT }}
+          key: apex-db-backfill-${{ github.run_id }}

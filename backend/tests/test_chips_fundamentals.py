@@ -144,8 +144,10 @@ def test_taiex_total_return_index():
 def test_finmind_revenue_uses_revenue_month():
     from apex.sources import finmind
     rows = finmind.parse_revenue(_read("finmind_revenue_2809.json"), "2809", "TWSE", "京城銀")
-    assert (rows[0].year, rows[0].month, rows[0].revenue) == (2015, 1, 482901000)  # 2014-12 的資料被略過
-    assert rows[0].available_date == dt.date(2015, 2, 11)
+    # 資料的 date 是公告月份，revenue_year／month 才是營收所屬月份
+    assert (rows[0].year, rows[0].month, rows[0].revenue) == (2014, 12, 739716000)
+    assert (rows[1].year, rows[1].month, rows[1].revenue) == (2015, 1, 482901000)
+    assert rows[1].available_date == dt.date(2015, 2, 11)
 
 
 def test_finmind_income_single_quarter_to_ytd():
@@ -182,3 +184,14 @@ def test_insert_supplement_keeps_mops_rows():
     got = db.con.execute("SELECT month, revenue, source FROM monthly_revenue ORDER BY month").fetchall()
     assert got == [(1, 100, "mops"), (2, 200, "finmind")]
     db.close()
+
+
+def test_twse_insti_oldest_format_2012():
+    """2012-05～2014-11 的證交所三大法人：12 欄，自營商沒有分自行買賣與避險。"""
+    import json
+    fields = chips.TWSE_INSTI_OLDEST
+    row = ["2330  ", "台積電", "1,000", "400", "600", "50", "0", "50", "-30", "10", "40", "620"]
+    text = json.dumps({"stat": "OK", "date": "20121003", "fields": fields, "data": [row]}, ensure_ascii=False)
+    r = chips.parse_twse_insti(text, dt.date(2012, 10, 3))[0]
+    assert (r.code, r.foreign_net, r.trust_net, r.dealer_net, r.total_net) == ("2330", 600, 50, -30, 620)
+    assert r.dealer_self_net is None and r.dealer_hedge_net is None and r.foreign_dealer_net is None
