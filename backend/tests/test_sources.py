@@ -65,3 +65,11 @@ def test_tpex_skips_title_row_mixed_into_data():
     main["data"].insert(1, ["115年11月13日 櫃檯買賣中心證券行情"] + [""] * (len(main["fields"]) - 1))
     quotes = tpex.parse_quotes(json.dumps(data), d)
     assert len(quotes) == n and all(q.code.isalnum() and q.code.isascii() for q in quotes)
+
+
+def test_tpex_2011_zero_price_means_no_trade():
+    """2011 年的櫃買行情，無成交的價格填 0.00（不是 ----），要當成沒有價格。"""
+    quotes = {q.code: q for q in tpex.parse_quotes(load("tpex_quotes_20111031.json"), dt.date(2011, 10, 31))}
+    assert quotes["4502"].close is None and quotes["4502"].open is None
+    assert quotes["5011"].close is None and quotes["5011"].low is None
+    assert quotes["4907"].close == 2.86 and quotes["4907"].low == 2.86

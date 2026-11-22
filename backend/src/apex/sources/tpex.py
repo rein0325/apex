@@ -18,6 +18,12 @@ def quotes_params(date: dt.date) -> dict[str, str]:
     return {"date": date.strftime("%Y/%m/%d"), "response": "json"}
 
 
+def _price(text: str) -> float | None:
+    """價格；2011 年等早期資料無成交時填 0.00，視為沒有價格。"""
+    v = to_float(text)
+    return v if v else None
+
+
 def parse_quotes(text: str, date: dt.date) -> list[Quote]:
     """解析上櫃每日行情（含管理股票）。排除權證；無成交的價格為 None。"""
     try:
@@ -53,8 +59,8 @@ def parse_quotes(text: str, date: dt.date) -> list[Quote]:
                 continue
             quotes.append(Quote(
                 date=date, market="TPEX", code=code, name=row[idx["名稱"]].strip(), sec_type=sec_type,
-                open=to_float(row[idx["開盤"]]), high=to_float(row[idx["最高"]]),
-                low=to_float(row[idx["最低"]]), close=to_float(row[idx["收盤"]]),
+                open=_price(row[idx["開盤"]]), high=_price(row[idx["最高"]]),
+                low=_price(row[idx["最低"]]), close=_price(row[idx["收盤"]]),
                 volume=to_int(row[idx["成交股數"]]), value=to_int(row[idx["成交金額(元)"]]),
                 trades=to_int(row[idx["成交筆數"]]), is_managed=managed,
             ))

@@ -11,7 +11,7 @@ import pandas as pd
 
 from apex import quality
 from apex.db import MARKETS, Database
-from apex.http import HttpClient
+from apex.http import FetchError, HttpClient
 from apex.raw_store import RawStore, sha256
 from apex.sources import NotPublished, ParseError, actions, chips, finmind, fundamentals, listings, tpex, twse
 
@@ -262,6 +262,12 @@ class Pipeline:
                         self.db.set_dataset_status(ds, date, market, "failed", None, f"解析失敗：{e}")
                         counts["failed"] += 1
                         msgs.append(f"{ds} {market} 解析失敗：{e}")
+                        continue
+                    except FetchError as e:
+                        # 網站暫時錯誤（例如 HTTP 525）：記錄後跳過，下次續跑會重抓
+                        self.db.set_dataset_status(ds, date, market, "failed", None, f"下載失敗：{e}")
+                        counts["failed"] += 1
+                        msgs.append(f"{ds} {market} 下載失敗：{e}")
                         continue
                     self.db.replace_daily(ds, date, market, rows)
                     self.db.set_dataset_status(ds, date, market, "ok", len(rows))
