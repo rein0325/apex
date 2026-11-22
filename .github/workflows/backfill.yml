@@ -3,6 +3,7 @@ name: 資料回補
 # 回補 2011～2014 的資料，給大漲股研究的早期考試用（docs/研究報告/大漲股研究.md）。
 # 只在 main 以外的分支修改 .github/backfill.json 或這個檔案後推送時執行（新工作流程進 main 前無法手動執行）。
 # 每一步都可以中斷續跑：已成功的日子、期間、代號會略過；一次跑不完就再推送一次 backfill.json。
+# backfill.json 可設 "only": "finmind"（只補 FinMind）與 "finmind_minutes"（FinMind 最多跑幾分鐘，預設 20）。
 # 資料庫存在這個分支的 Actions 快取（其他分支的研究可以讀到；main 的每日更新讀不到，不影響網站）。
 on:
   push:
@@ -51,32 +52,42 @@ jobs:
         id: restore
         run: uv run python -m apex snapshot restore "$SNAPSHOT"
 
+      - name: 讀取設定
+        id: cfg
+        working-directory: .
+        run: |
+          echo "only=$(jq -r '.only // ""' .github/backfill.json)" >> "$GITHUB_OUTPUT"
+          echo "finmind=$(jq -r '.finmind_minutes // 20' .github/backfill.json)" >> "$GITHUB_OUTPUT"
       # 每個指令都用 backfill-step.sh 包起來：時間到會自己結束並放開資料庫，失敗原因寫成公開註記。
       - name: 交易日曆、指數、除權息、終止上市櫃
+        if: steps.cfg.outputs.only == ''
         run: |
           bash ../.github/backfill-step.sh 10 uv run python -m apex calendar --start 2011-01 --end 2014-12
           bash ../.github/backfill-step.sh 10 uv run python -m apex indices --start 2011-01 --end 2014-12
           bash ../.github/backfill-step.sh 15 uv run python -m apex actions --start-year 2011 --end-year 2014
           bash ../.github/backfill-step.sh 5 uv run python -m apex listings
       - name: 每日行情
+        if: steps.cfg.outputs.only == ''
         run: bash ../.github/backfill-step.sh 120 uv run python -m apex backfill --start 2011-01-03 --end 2014-12-31
       - name: 中途存檔 1
-        if: always() && steps.restore.outcome == 'success'
+        if: always() && steps.restore.outcome == 'success' && steps.cfg.outputs.only == ''
         run: uv run python -m apex snapshot export "$SNAPSHOT"
       - name: 中途存檔 1（快取）
-        if: always() && steps.restore.outcome == 'success'
+        if: always() && steps.restore.outcome == 'success' && steps.cfg.outputs.only == ''
         uses: actions/cache/save@v4
         with:
           path: ${{ env.SNAPSHOT }}
           key: apex-db-backfill-${{ github.run_id }}-1
       - name: 融資融券、三大法人（證交所 2012-05 起才有）
+        if: steps.cfg.outputs.only == ''
         run: |
           bash ../.github/backfill-step.sh 45 uv run python -m apex chips --dataset margin --start 2011-01-03 --end 2014-12-31
           bash ../.github/backfill-step.sh 45 uv run python -m apex chips --dataset institutional --start 2012-05-02 --end 2014-12-31
       - name: 月營收（2011 起）、財報（2013 起，IFRS）
+        if: steps.cfg.outputs.only == ''
         run: bash ../.github/backfill-step.sh 25 uv run python -m apex fundamentals --start-year 2011
       - name: FinMind 補已下市公司（2011 起；額度用完就停，下次續跑）
-        run: bash ../.github/backfill-step.sh 20 uv run python -m apex finmind
+        run: bash ../.github/backfill-step.sh ${{ steps.cfg.outputs.finmind }} uv run python -m apex finmind
       - name: 重建還原因子、資料狀態
         if: always() && steps.restore.outcome == 'success'
         run: |

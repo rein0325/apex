@@ -67,6 +67,13 @@ def print_status(db: Database) -> None:
         FROM dataset_status GROUP BY 1 ORDER BY 1
     """).fetchall():
         print(f"{ds}：ok {ok}、failed {failed}（{first}～{last}，市場×日）")
+    from apex.pipeline import FINMIND_START
+    todo, synced = con.execute("""
+        SELECT count(*), count(f.code) FROM securities s
+        LEFT JOIN finmind_sync f ON f.code = s.code AND f.since = ?
+        WHERE s.sec_type = 'stock' AND s.status <> 'listed'
+    """, [FINMIND_START]).fetchone()
+    print(f"FinMind 已下市公司（{FINMIND_START} 起）：已補 {synced}/{todo} 檔")
     warn = con.execute("""
         SELECT check_name, count(*) FROM dq_results WHERE severity = 'warning' GROUP BY 1 ORDER BY 2 DESC
     """).fetchall()
