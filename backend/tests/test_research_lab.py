@@ -238,3 +238,21 @@ def test_price_limit_was_7pct_before_june_2015():
     c = CostModel()
     assert c.limit_at(dt.date(2015, 5, 29)) == pytest.approx(0.065)
     assert c.limit_at(dt.date(2015, 6, 1)) == pytest.approx(c.limit_threshold)
+
+
+def test_strength_60_picks_top_60_day_returns():
+    from apex.research.features import Features
+    from apex.research.strategies import build, family_of
+    assert family_of("S60:6:3") == "S"
+    data = _random_data(n_days=300, n_codes=8)
+    data.panels["value"] = data.panels["value"] * 0 + 1e9
+    f = Features(data)
+    ctx = Context(data.days[280], data, 280)
+    s = build("S60:3", f)
+    assert (s.n, s.buffer) == (3, 3.0)
+    w = s(ctx)
+    from apex.backtest.strategies import liquid_universe
+    ret = f.at("ret_60", data.days[280]).reindex(liquid_universe(ctx)).dropna()
+    assert len(ret) >= 4
+    expected = ret.sort_values(ascending=False).index[:3]
+    assert set(w) == set(expected) and sum(w.values()) == pytest.approx(1.0)

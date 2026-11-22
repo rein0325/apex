@@ -1,7 +1,4 @@
 [
-  "ml --period research --model lgbm --model xgb --model ridge --horizon 100 --features v2 --target big --vote",
-  "ml --period research --model lgbm --model xgb --model ridge --horizon 100 --features v2 --target big --vote --placebo",
-  "ml --period validation --model lgbm --model xgb --model ridge --horizon 100 --features v2 --target big --vote",
-  "--start 2018-01-02 --end 2022-12-30 --goal big --random 100 --note big --strategy BIG:lgbm/xgb/ridge:100:6:3::v2+X:-:-:-:30:100 --strategy BIG:lgbm/xgb/ridge:100:6:3::v2+X:-:-:-:-:100",
-  "--period validation --goal big --random 100 --note big-reference --strategy BIG:lgbm/xgb/ridge:100:6:3::v2+X:-:-:-:30:100 --strategy BIG:lgbm/xgb/ridge:100:6:3::v2+X:-:-:-:-:100"
+  "--period research --goal big --random 100 --note s60 --strategy S60:6:3+X:-:-:-:30:100 --strategy S60:6:3+X:-:-:-:-:100",
+  "--period validation --goal big --random 100 --note s60-validation --strategy S60:6:3+X:-:-:-:30:100 --strategy S60:6:3+X:-:-:-:-:100"
 ]

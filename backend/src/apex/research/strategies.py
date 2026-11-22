@@ -184,6 +184,16 @@ def strength_with_institutions(arg: str, f: Features) -> Strategy:
     return _selector(f, arg, score)
 
 
+@register("S60", "S")
+def strength_60(arg: str, f: Features) -> Strategy:
+    """S60:檔數:緩衝：近 60 日報酬最高的 n 檔，等權重（預設 6 檔、緩衝 3 倍；docs/研究報告/強勢股研究.md）。
+
+    不用模型，就是大漲股研究的「近 60 日強勢」對照；通常搭配 +X:-:-:-:30:100 或 +X:-:-:-:-:100。
+    """
+    n, buffer = _params(arg, default_n=6, default_buffer=3.0)
+    return Selector(f, n, lambda f, d, u: _at(f, "ret_60", d, u), buffer)
+
+
 # ── C. 成長潛力 ──────────────────────────────────────────────────────────
 
 @register("C1", "C")
