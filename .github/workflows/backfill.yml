@@ -7,7 +7,7 @@ name: 資料回補
 on:
   push:
     branches-ignore: [main]
-    paths: [.github/backfill.json, .github/workflows/backfill.yml]
+    paths: [.github/backfill.json, .github/workflows/backfill.yml, .github/backfill-step.sh]
 
 permissions:
   contents: read
@@ -25,7 +25,7 @@ env:
 jobs:
   backfill:
     runs-on: ubuntu-latest
-    timeout-minutes: 355
+    timeout-minutes: 358
     defaults:
       run:
         working-directory: backend
@@ -51,36 +51,37 @@ jobs:
         id: restore
         run: uv run python -m apex snapshot restore "$SNAPSHOT"
 
+      # 每個指令都用 backfill-step.sh 包起來：時間到會自己結束並放開資料庫，失敗原因寫成公開註記。
       - name: 交易日曆、指數、除權息、終止上市櫃
-        continue-on-error: true
-        timeout-minutes: 40
         run: |
-          uv run python -m apex calendar --start 2011-01 --end 2014-12
-          uv run python -m apex indices --start 2011-01 --end 2014-12
-          uv run python -m apex actions --start-year 2011 --end-year 2014
-          uv run python -m apex listings
+          bash ../.github/backfill-step.sh 10 uv run python -m apex calendar --start 2011-01 --end 2014-12
+          bash ../.github/backfill-step.sh 10 uv run python -m apex indices --start 2011-01 --end 2014-12
+          bash ../.github/backfill-step.sh 15 uv run python -m apex actions --start-year 2011 --end-year 2014
+          bash ../.github/backfill-step.sh 5 uv run python -m apex listings
       - name: 每日行情
-        continue-on-error: true
-        timeout-minutes: 150
-        run: uv run python -m apex backfill --start 2011-01-03 --end 2014-12-31
+        run: bash ../.github/backfill-step.sh 120 uv run python -m apex backfill --start 2011-01-03 --end 2014-12-31
+      - name: 中途存檔 1
+        if: always() && steps.restore.outcome == 'success'
+        run: uv run python -m apex snapshot export "$SNAPSHOT"
+      - name: 中途存檔 1（快取）
+        if: always() && steps.restore.outcome == 'success'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.SNAPSHOT }}
+          key: apex-db-backfill-${{ github.run_id }}-1
       - name: 融資融券、三大法人（證交所 2012-05 起才有）
-        continue-on-error: true
-        timeout-minutes: 100
         run: |
-          uv run python -m apex chips --dataset margin --start 2011-01-03 --end 2014-12-31
-          uv run python -m apex chips --dataset institutional --start 2012-05-02 --end 2014-12-31
+          bash ../.github/backfill-step.sh 45 uv run python -m apex chips --dataset margin --start 2011-01-03 --end 2014-12-31
+          bash ../.github/backfill-step.sh 45 uv run python -m apex chips --dataset institutional --start 2012-05-02 --end 2014-12-31
       - name: 月營收（2011 起）、財報（2013 起，IFRS）
-        continue-on-error: true
-        timeout-minutes: 30
-        run: uv run python -m apex fundamentals --start-year 2011
+        run: bash ../.github/backfill-step.sh 25 uv run python -m apex fundamentals --start-year 2011
       - name: FinMind 補已下市公司（2011 起；額度用完就停，下次續跑）
-        continue-on-error: true
-        timeout-minutes: 25
-        run: uv run python -m apex finmind
+        run: bash ../.github/backfill-step.sh 20 uv run python -m apex finmind
       - name: 重建還原因子、資料狀態
         if: always() && steps.restore.outcome == 'success'
         run: |
-          uv run python -m apex actions --start-year 2011 --end-year 2011
+          pkill -INT -f "python -m apex" || true
+          bash ../.github/backfill-step.sh 15 uv run python -m apex actions --start-year 2011 --end-year 2011
           uv run python -m apex status | tee status.txt
           echo "::notice title=回補狀態::$(awk 'BEGIN { ORS = "%0A" } { gsub(/%/, "%25"); gsub(/[[:cntrl:]]/, ""); print }' status.txt)"
 
