@@ -1,5 +1,7 @@
 [
-  "--start 2018-01-02 --end 2022-12-30 --goal swing --random 100 --note ml-v2-detail --strategy ML:lgbm/xgb/ridge:20/60/120:6:3::v2+D3 --strategy ML:lgbm:60:6:3+D3",
-  "--period validation --goal swing --random 100 --note ml-v2-reference --strategy ML:lgbm/xgb/ridge:20/60/120:6:3::v2+D3 --strategy ML:lgbm:60:6:3+D3",
-  "--period holdout --unlock-holdout --goal swing --random 100 --note ml-v2-holdout-exam --strategy ML:lgbm/xgb/ridge:20/60/120:6:3::v2+D3 --strategy ML:lgbm:60:6:3+D3 --strategy buyhold:0050"
+  "ml --period research --model lgbm --model xgb --model ridge --horizon 100 --features v2 --target big --vote",
+  "ml --period research --model lgbm --model xgb --model ridge --horizon 100 --features v2 --target big --vote --placebo",
+  "ml --period validation --model lgbm --model xgb --model ridge --horizon 100 --features v2 --target big --vote",
+  "--start 2018-01-02 --end 2022-12-30 --goal big --random 100 --note big --strategy BIG:lgbm/xgb/ridge:100:6:3::v2+X:-:-:-:30:100 --strategy BIG:lgbm/xgb/ridge:100:6:3::v2+X:-:-:-:-:100",
+  "--period validation --goal big --random 100 --note big-reference --strategy BIG:lgbm/xgb/ridge:100:6:3::v2+X:-:-:-:30:100 --strategy BIG:lgbm/xgb/ridge:100:6:3::v2+X:-:-:-:-:100"
 ]
