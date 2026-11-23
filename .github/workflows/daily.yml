@@ -34,6 +34,15 @@ jobs:
       run:
         working-directory: backend # 後端程式；網站畫面在 frontend/
     steps:
+      - name: 觸發紀錄（排程是否準時）
+        working-directory: .
+        env:
+          EVENT: ${{ github.event_name }}
+          CRON: ${{ github.event.schedule }}
+        run: |
+          now=$(TZ=Asia/Taipei date '+%Y-%m-%d %H:%M:%S')
+          echo "::notice title=觸發紀錄::觸發方式 ${EVENT}、排程 ${CRON:-無（手動）}、實際開始（台灣時間）${now}"
+
       - uses: actions/checkout@v4
 
       - uses: astral-sh/setup-uv@v6
