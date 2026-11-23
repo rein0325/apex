@@ -1,12 +1,12 @@
 name: 每日更新
 
-# 台灣時間平日 18:20～22:20 每小時一次，最後 23:50 再一次（交易所資料陸續公布；融資融券較晚）。
-# GitHub 排程可能延遲或略過（2026-11-20 三次都沒觸發），所以多排幾個時段；每次都只補缺的資料，重跑無害。
+# 台灣時間平日 18:17～22:17 每小時一次，最後 23:47 再一次（交易所資料陸續公布；融資融券較晚）。
+# GitHub 排程可能延遲或略過（2026-11-20、11-23 全部都沒觸發，11-24 改時間重新登記），所以多排幾個時段；每次都只補缺的資料，重跑無害。
 # 最後一次資料仍不是最新才算失敗並寄通知。
 on:
   schedule:
-    - cron: "20 10-14 * * 1-5"
-    - cron: "50 15 * * 1-5"
+    - cron: "17 10-14 * * 1-5"
+    - cron: "47 15 * * 1-5"
   workflow_dispatch:
 
 permissions:
@@ -24,7 +24,7 @@ env:
   APEX_DB_KEY: ${{ secrets.APEX_DB_KEY }}
   APEX_VIEW_PASSWORD: ${{ secrets.APEX_VIEW_PASSWORD }} # 候選股票頁的密碼
   SNAPSHOT: ${{ github.workspace }}/snapshot/apex-db.tar.enc
-  LAST_RUN: "50 15 * * 1-5"
+  LAST_RUN: "47 15 * * 1-5"
 
 jobs:
   daily:
