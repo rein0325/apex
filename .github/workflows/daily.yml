@@ -1,12 +1,13 @@
 name: 每日更新
 
-# 台灣時間平日 18:17～22:17 每小時一次，最後 23:47 再一次（交易所資料陸續公布；融資融券較晚）。
-# GitHub 排程可能延遲或略過（2026-11-20、11-23 全部都沒觸發，11-24 改時間重新登記），所以多排幾個時段；每次都只補缺的資料，重跑無害。
-# 最後一次資料仍不是最新才算失敗並寄通知。
+# 台灣時間平日 18:04 到隔天 08:54，每 10 分鐘排一次（約 90 次）。
+# GitHub 排程大多會被略過（2026-11-24 實測：心跳約 43 次只觸發 2 次），所以密集排。
+# 先由 check 判斷：網站已是最新就跳過，不重跑（.github/daily_check.py）。手動執行一律會跑。
+# 過了午夜資料仍不是最新，就標示失敗並寄通知。整晚都沒被觸發時，這裡無法通知。
 on:
   schedule:
-    - cron: "17 10-14 * * 1-5"
-    - cron: "47 15 * * 1-5"
+    - cron: "4-54/10 10-23 * * 1-5"
+    - cron: "4-54/10 0 * * 2-6"
   workflow_dispatch:
 
 permissions:
@@ -24,25 +25,33 @@ env:
   APEX_DB_KEY: ${{ secrets.APEX_DB_KEY }}
   APEX_VIEW_PASSWORD: ${{ secrets.APEX_VIEW_PASSWORD }} # 候選股票頁的密碼
   SNAPSHOT: ${{ github.workspace }}/snapshot/apex-db.tar.enc
-  LAST_RUN: "47 15 * * 1-5"
 
 jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      run: ${{ steps.check.outputs.run }}
+      final: ${{ steps.check.outputs.final }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: check
+        env:
+          EVENT: ${{ github.event_name }}
+          CRON: ${{ github.event.schedule }}
+        run: python3 .github/daily_check.py https://rein0325.github.io/apex/data.json
+
   daily:
+    needs: check
+    if: needs.check.outputs.run == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 120
     defaults:
       run:
         working-directory: backend # 後端程式；網站畫面在 frontend/
     steps:
-      - name: 觸發紀錄（排程是否準時）
-        working-directory: .
-        env:
-          EVENT: ${{ github.event_name }}
-          CRON: ${{ github.event.schedule }}
-        run: |
-          now=$(TZ=Asia/Taipei date '+%Y-%m-%d %H:%M:%S')
-          echo "::notice title=觸發紀錄::觸發方式 ${EVENT}、排程 ${CRON:-無（手動）}、實際開始（台灣時間）${now}"
-
       - uses: actions/checkout@v4
 
       - uses: astral-sh/setup-uv@v6
@@ -74,7 +83,7 @@ jobs:
         id: daily
         run: |
           extra=""
-          if [ "${{ github.event.schedule }}" = "$LAST_RUN" ]; then extra="--fail-if-stale"; fi
+          if [ "${{ needs.check.outputs.final }}" = "true" ]; then extra="--fail-if-stale"; fi
           uv run python -m apex daily --record-paper --site "$GITHUB_WORKSPACE/site" $extra
 
       - name: 加密匯出資料庫
@@ -88,12 +97,12 @@ jobs:
           path: ${{ env.SNAPSHOT }}
           key: apex-db-${{ github.run_id }}
 
-      - name: 每週五更新 Release 備份（快取 7 天沒用會被刪除）
-        if: always() && steps.restore.outcome == 'success' && github.event.schedule == env.LAST_RUN
+      - name: 週五、週六更新 Release 備份（快取 7 天沒用會被刪除）
+        if: always() && steps.restore.outcome == 'success'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if [ "$(date +%u)" = "5" ]; then gh release upload db-seed "$SNAPSHOT" --clobber; fi
+          if [ "$(date +%u)" = "5" ] || [ "$(date +%u)" = "6" ]; then gh release upload db-seed "$SNAPSHOT" --clobber; fi
 
       - name: 推送模擬追蹤雜湊承諾
         if: always() && steps.daily.outcome != 'skipped'
@@ -113,9 +122,18 @@ jobs:
         with:
           path: site
 
+      - name: 過了午夜資料仍不是最新就失敗（GitHub 會寄通知）
+        if: github.event_name == 'schedule'
+        working-directory: .
+        run: |
+          if [ "$(date +%-H)" -lt 18 ] && [ "$(jq -r .stale site/data.json)" = "true" ]; then
+            echo "::error title=資料過舊::應到 $(jq -r .expected_date site/data.json)，只到 $(jq -r .data_date site/data.json)"
+            exit 1
+          fi
+
   deploy:
     needs: daily
-    if: always() && needs.daily.result != 'cancelled'
+    if: always() && (needs.daily.result == 'success' || needs.daily.result == 'failure')
     runs-on: ubuntu-latest
     environment:
       name: github-pages
