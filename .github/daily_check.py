@@ -1,6 +1,6 @@
 """每日更新要不要跑：看已發布網站的 data.json，最近一個平日 18:00 之後已產生且資料齊全就跳過。
 
-輸出到 GITHUB_OUTPUT：run（要不要跑）、final（台灣時間 06:00～08:59，開盤前最後機會）。
+輸出到 GITHUB_OUTPUT：run（要不要跑）、final（是不是當天最後一個排程，延遲也算）。
 讀不到網站時一律照跑。國定假日也適用：看的是產生時間與「是否為應有的資料日」，不是日期本身。
 """
 
@@ -11,6 +11,7 @@ import sys
 import time
 import urllib.request
 
+LAST = "17 14 * * 1-5"  # 與 daily.yml 最後一個 cron 相同
 TW = dt.timezone(dt.timedelta(hours=8))
 
 
@@ -52,7 +53,7 @@ if __name__ == "__main__":
     now = dt.datetime.now(TW).replace(tzinfo=None)
     event = os.environ.get("EVENT", "")
     data = fetch(sys.argv[1])
-    run, final = decide(event, data, now), event == "schedule" and 6 <= now.hour < 9
+    run, final = decide(event, data, now), event == "schedule" and os.environ.get("CRON") == LAST
     with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as f:
         f.write(f"run={str(run).lower()}\nfinal={str(final).lower()}\n")
     print(f"::notice title=觸發紀錄::{event}、排程 {os.environ.get('CRON') or '無（手動）'}、"
